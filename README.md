@@ -7,8 +7,9 @@ way to review them. CALL-ANALYZER evaluates every call against a **hierarchical,
 business-configurable quality framework** using a multi-agent AI pipeline, and
 makes every score explainable down to the exact sentence that justified it.
 
-> **Status: Phase 1 of 8 complete.** Database schema, scoring engine and seed
-> data are built and verified. See [CODEMAP.md](CODEMAP.md) for what every file
+> **Status: Phase 2 of 8 complete.** Database schema, scoring engine, seed data
+> and the backend API are built and verified — 54 backend tests and 4 SQL
+> scoring-engine assertions passing. See [CODEMAP.md](CODEMAP.md) for what every file
 > does.
 
 ---
@@ -83,6 +84,21 @@ T4b PASS · re-weighted to v2 (RESOLUTION=70%) score = 85.000 (grade B) — 0 LL
 ALL SCORING ENGINE TESTS PASSED
 ```
 
+### Run the backend
+
+```bash
+cd backend
+uv venv --python 3.12
+uv pip install -e ".[dev]"
+.venv/bin/uvicorn app.main:app --reload --port 8000
+```
+
+Interactive API docs: <http://localhost:8000/docs> — 29 endpoints.
+
+```bash
+.venv/bin/python -m pytest tests/ -q      # 54 tests
+```
+
 ### Reset to a clean seeded state
 
 ```bash
@@ -151,8 +167,8 @@ reason recorded — so the UI never shows an unexplained zero.
 | Phase | Scope | Status |
 |---|---|---|
 | 1 | DB schema, scoring engine, seed data | ✅ **Complete & verified** |
-| 2 | Backend APIs — framework CRUD, ingestion | ⬜ Next |
-| 3 | Agent pipeline — scoring + summary end-to-end, then sentiment + risk | ⬜ |
+| 2 | Backend APIs — framework CRUD, ingestion | ✅ **Complete & verified** |
+| 3 | Agent pipeline — scoring + summary end-to-end, then sentiment + risk | ⬜ Next |
 | 4 | Aggregation & score computation wiring | ⬜ |
 | 5 | React dashboard — overview + drill-down | ⬜ |
 | 6 | Admin panel for the dynamic framework | ⬜ |

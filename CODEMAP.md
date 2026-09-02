@@ -22,7 +22,7 @@ CALL-ANALYZER/
 │   └── config.toml           Local stack config (ports remapped to 544xx)
 ├── scripts/               ✅ Developer utilities
 │   └── generate_seed_calls.py
-├── backend/               ⬜ FastAPI app + agent pipeline   (Phase 2-4, 7)
+├── backend/               ✅ FastAPI app (Phase 2) + pipeline (Phase 3-4, 7)
 ├── frontend/              ⬜ React dashboard                (Phase 5-6)
 ├── docs/                  ✅ Architecture and report material
 ├── .env.example           ✅ Environment template
@@ -285,11 +285,163 @@ Runs in a transaction and rolls back. All four pass:
 
 ---
 
+## `backend/` — FastAPI application ✅ *(Phase 2)*
+
+```
+backend/
+├── pyproject.toml          Dependencies, ruff and pytest config
+├── app/
+│   ├── main.py             App entrypoint, CORS, exception handlers, lifespan
+│   ├── config.py           All settings, loaded once from the repo-root .env
+│   ├── db.py               asyncpg pool + query helpers
+│   ├── errors.py           Domain exceptions -> HTTP responses
+│   ├── security.py         JWT verification, roles, dev bypass
+│   ├── schemas/            Pydantic models = the API contract
+│   ├── routers/            HTTP layer
+│   └── services/           Business logic
+└── tests/                  54 tests, all passing
+```
+
+### `app/config.py` ✅
+`Settings` (pydantic-settings), cached by `get_settings()`. Every tunable lives
+here rather than being read from `os.environ` at the point of use, so the whole
+configuration surface is in one file and typos fail at startup.
+
+Notable properties: `cors_origin_list`, `fallback_model_list`,
+`is_local_database` (used by the dev-bypass safety check).
+
+### `app/db.py` ✅
+| Function | Purpose |
+|---|---|
+| `connect()` / `disconnect()` | Pool lifecycle, driven by the app lifespan |
+| `_init_connection()` | Registers a **jsonb codec** so jsonb columns decode to dicts |
+| `fetch` / `fetchrow` / `fetchval` / `execute` | Thin wrappers that keep `dict(row)` out of every service |
+
+> **Raw SQL, no ORM.** The scoring engine lives in Postgres functions
+> (`recompute_evaluation_scores`, `publish_framework_version`, `claim_next_job`).
+> An ORM would be a layer these calls punch straight through anyway.
+
+> **Gotcha fixed during build:** with a jsonb codec registered, you pass the
+> Python object, *not* `json.dumps(obj)`. Encoding at the call site as well
+> stores a JSON string containing JSON. Three tests caught this.
+
+### `app/errors.py` ✅
+`AppError` / `NotFound` / `Conflict` / `ValidationError` / `Forbidden`, plus
+`postgres_error_handler`, which maps SQLSTATEs onto meaningful HTTP codes.
+
+> The database raises *deliberate*, human-readable errors — the immutability
+> trigger and `publish_framework_version()` both raise `check_violation` with a
+> sentence written for a user. Those surface as **409 with the original text**,
+> so the admin UI can show exactly what is wrong instead of "publish failed".
+
+### `app/security.py` ✅
+| Object | Purpose |
+|---|---|
+| `CurrentUser` | Frozen dataclass: id, email, role, team_id |
+| `get_current_user()` | Verifies the Supabase HS256 JWT, loads the `profiles` row |
+| `require_admin()` | Gate on every framework-mutating endpoint |
+| `DEV_USER` | Identity used when `AUTH_DEV_BYPASS=true` |
+
+> The backend connects as the database owner and **bypasses RLS** — the pipeline
+> must write scores for every team. So authorisation here is not decorative:
+> `require_admin` and `call_service._scope_clause` are the real access control
+> for API traffic. RLS guards the separate browser-to-Supabase path.
+
+### `app/services/transcript_parser.py` ✅ ★ protects the citation invariant
+| Function | Purpose |
+|---|---|
+| `normalise_speaker()` | Maps `AGENT_01`, `Rep`, `CSR`, `CALLER`… onto the `speaker_role` enum |
+| `parse_text_transcript()` | Speaker-prefixed text, multi-line turns, `[00:01:23]` timestamps |
+| `parse_turn_list()` | JSON turn arrays; tolerates `role`/`content`/`utterance` aliases |
+| `_assemble()` | **The only place `full_text` is built**, with offsets computed in the same pass |
+| `ParsedTranscript.verify()` | Slices every offset back and compares — called unconditionally |
+| `compute_statistics()` | Deterministic, zero-LLM metrics (talk ratio, interruption proxy) |
+
+> **Why this file exists.** `full_text` is canonical and every turn offset indexes
+> into it. The parser therefore never accepts a caller-supplied `full_text`
+> alongside separate turns — it rebuilds both from one source, making
+> disagreement structurally impossible rather than merely unlikely.
+
+> Handles the trap case: `"The problem is simple: my bill doubled"` must not be
+> read as a speaker named *"The problem is simple"*. Tested.
+
+### `app/services/framework_service.py` ✅
+Version queries, tree assembly, CRUD for all three levels, and lifecycle
+(`clone`, `publish`, `validate`, `normalize`, `reproject`, `ensure_draft`).
+
+> **No auto-cloning.** Silently forking the rubric because someone nudged a
+> weight would make version history unpredictable and litter the list with
+> accidental drafts. Mutating a published version returns **409 with an
+> actionable message**; `ensure_draft()` (`POST /api/framework/draft`) returns the
+> existing draft or clones one, so the UI can say "Editing draft v3" *before* the
+> first keystroke.
+
+### `app/services/ingestion_service.py` ✅
+| Function | Purpose |
+|---|---|
+| `normalise_row()` | Maps `call_id`/`conversation_id`/`body`/`length`… onto canonical fields; unknown columns are **preserved into metadata** |
+| `ingest_one()` | Call + transcript + turns in **one transaction** |
+| `parse_upload()` | CSV or JSON, incl. `{"calls": [...]}` wrappers |
+| `ingest_batch()` | **Partial-tolerant** bulk import |
+
+> Three bad rows in a 500-row CSV import 497 calls and log three errors with row
+> numbers — rather than failing the whole upload. Re-posting the same
+> `call_code` **updates in place**, so an interrupted import is safe to re-run.
+
+### `app/services/call_service.py` ✅
+`list_calls()` (14 filters, full-text search, sorting, pagination),
+`get_call_detail()`, `get_transcript()`.
+
+> `_scope_clause()` is the access control: admin sees all, manager sees their
+> team, agent sees their own calls. It **fails closed** — a manager with no team
+> sees nothing. `_assert_visible()` returns **404 rather than 403**, because
+> confirming a call exists is itself a small leak.
+
+> The drill-down is deliberately one response, not eight endpoints: the page
+> always renders all of it together, and a single payload keeps the frontend
+> free of loading-state choreography. Citations are aggregated inline with
+> `jsonb_agg` to avoid N+1 across ~31 scores.
+
+### `app/routers/` ✅ — 29 operations across 26 paths
+
+| File | Endpoints |
+|---|---|
+| `framework.py` | 19 — versions, active, draft, clone, validate, normalize, publish, apply, CRUD ×3 levels, reorder |
+| `calls.py` | 3 — list with filters, drill-down, transcript |
+| `ingestion.py` | 4 — single call, batch upload, batch list, batch detail |
+| `meta.py` | 3 — health, teams, agents |
+
+Key endpoints:
+
+| Endpoint | What it does |
+|---|---|
+| `POST /api/framework/draft` | Returns an editable draft, cloning the published version if needed |
+| `GET  /api/framework/versions/{id}/validate` | Live weight/structure problems; the admin UI polls it while editing |
+| `POST /api/framework/versions/{id}/normalize` | Auto-balance to 100 at every level |
+| `POST /api/framework/versions/{id}/publish` | Validate → archive incumbent → promote, atomically |
+| `POST /api/framework/versions/{id}/apply` | Re-project across history; returns *recomputed instantly* vs *queued for re-scoring* |
+
+## `backend/tests/` ✅ — 54 tests, all passing
+
+| File | Tests | Covers |
+|---|---|---|
+| `test_transcript_parser.py` | 30 | Speaker normalisation, multi-line turns, timestamps, the colon-in-a-sentence trap, offset integrity |
+| `test_api_integration.py` | 24 | Immutability, the full draft→publish cycle, filters, search, pagination, ingestion, partial-tolerant batches |
+| `conftest.py` | — | Fixtures that restore the seeded state so the suite is re-runnable |
+
+Notable assertions:
+- Editing, deleting or adding to a **published** version all return 409.
+- Publishing an **unbalanced** tree returns 409 with the specific imbalance.
+- A CSV with 3 good rows and 1 broken one yields **3 calls and 1 logged error**.
+- Re-ingesting a `call_code` **replaces** its turns rather than merging them.
+- Turn offsets slice back byte-exact **through the API**, not just in the DB.
+
+---
+
 ## Planned
 
 | Path | Phase | Contents |
 |---|---|---|
-| `backend/app/` | 2 | FastAPI: framework CRUD, ingestion, evaluation trigger, chat |
 | `backend/app/agents/` | 3 | `preprocessing.py`, `scoring.py`, `sentiment.py`, `risk.py`, `summary.py` |
 | `backend/app/llm/` | 3 | Provider-agnostic adapter + retry/fallback ladder + `MOCK_LLM` mode |
 | `backend/app/pipeline/` | 3-4 | LangGraph orchestration + aggregator |
