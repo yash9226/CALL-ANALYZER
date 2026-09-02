@@ -39,3 +39,4 @@ Thumbs.db
 *.log
 uploads/
 audio_cache/
+frontend/tsconfig.tsbuildinfo
