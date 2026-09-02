@@ -890,6 +890,146 @@ actually matters.
 
 ---
 
+## Phase 7 — the manager assistant (hybrid RAG)
+
+### Why a router, not pure RAG
+
+Managers ask two incompatible kinds of question:
+
+| Question | Where the answer lives |
+|---|---|
+| *"Show me calls where the customer mentioned billing issues"* | **inside** transcripts |
+| *"Which agents scored lowest on empathy this week?"* | in **no single transcript** — it is an aggregate over thousands of score rows |
+
+A pure-RAG assistant fails the second outright: it retrieves five transcripts
+that mention empathy and confidently invents a ranking. So the first step
+classifies the question and picks a path — `semantic`, `analytical`, or `hybrid`.
+
+### `app/services/embedding_service.py` ✅
+
+| Function | Purpose |
+|---|---|
+| `build_chunks()` | Cuts on **turn boundaries**, one turn of overlap |
+| `embed_call()` / `embed_pending()` | Chunk, embed, store — model-aware |
+| `coverage()` | Index health, including the model mix |
+
+> **Overlap exists because support conversations are question-then-answer across
+> two turns.** A hard cut between them splits the question from its answer and
+> makes both halves unretrievable for the query that wanted them together.
+
+> **Chunks are never cut mid-sentence.** A passage that starts halfway through
+> an explanation reads as nonsense when the assistant quotes it back, and turn
+> boundaries also keep the chunk citable to exact turns — the same mechanism
+> the scores use.
+
+### `app/services/sql_guard.py` ✅ — 22 security tests
+
+The analytical path executes model-written SQL. That is a genuine injection
+surface: the model is influenced by user text.
+
+**Four independent layers**, any one of which stops an attack:
+
+1. This validator — single statement, SELECT only, whitelisted relations, no DDL
+   or DML, mandatory `LIMIT`, comments stripped *before* the semicolon check.
+2. The transaction runs **`READ ONLY`**, so a write that slipped past the parser
+   is rejected by Postgres itself.
+3. A `statement_timeout`, so a pathological query cannot pin a connection.
+4. Only dashboard views are whitelisted — `profiles`, `chat_messages`, `jobs`
+   and `agent_runs` are unreachable even by a valid query.
+
+> Layer 2 is what actually guarantees safety. The rest exist so failures are
+> fast, legible and cheap rather than merely survivable.
+
+### `app/services/chat_service.py` ✅
+Router → retrieve → answer, with the full grounding trail returned to the UI.
+
+> **Every answer is checkable.** Semantic answers cite calls and turn ranges;
+> analytical answers return the SQL that produced them. A manager cannot verify
+> "Fatima averaged 7% on empathy" by reading a transcript — the number is an
+> aggregate — so showing the query is the only way to make it verifiable. An
+> uncheckable number in a quality-assurance tool is worse than no number.
+
+### `frontend/src/pages/Chat.tsx` + `components/chat/Grounding.tsx` ✅
+Mode badge, result table, collapsible "How I calculated this", and citation
+cards that link into the call drill-down.
+
+---
+
+## Phase 7 — three real bugs found by testing
+
+### 1. The keyword half of hybrid search was silently dead
+
+`search_transcript_chunks()` built its query with `plainto_tsquery`, which **ANDs
+every lexeme**:
+
+```
+plainto_tsquery('Show me calls where the customer mentioned billing issues')
+  -> 'show' & 'call' & 'custom' & 'mention' & 'bill' & 'issu'   -> 0 chunks
+'billing' alone                                                 -> 77 chunks
+```
+
+So every result came from vector similarity alone — defeating the entire point
+of hybrid retrieval, which exists because keyword recall catches exact tokens
+like `FIBER-300` that embeddings blur away. Migration 0011 ORs the lexemes.
+
+Migration 0012 then fixed the consequence: ORing meant `call` and `customer`
+(present in **100%** of chunks — every greeting says "thank you for calling")
+swamped the ranking, and `ts_rank` has no notion of document frequency. A
+materialised view of per-lexeme DF now drops lexemes appearing in >25% of
+chunks. That is IDF in its crudest useful form, and it removes the *corpus's own*
+stopwords, which are domain-specific and cannot be known in advance.
+
+### 2. Embeddings fell back to chat models
+
+The retry ladder holds **generation** models. Applied to `embedContent`, a
+transient failure fell back to `gemini-3.7-flash`, which has no embedding
+endpoint — turning a retryable blip into a permanent 404 and burning the whole
+retry budget on models that could never succeed. Observed indexing the real
+corpus: 83 of 84 calls embedded, one failed this way.
+
+Fallback is now opt-out per endpoint. Two regression tests pin it.
+
+That failure also left **stale mock vectors mixed into a real index**, because
+`embed_pending` only skipped calls with *no* chunks. Vectors from two models
+share a coordinate space only by coincidence, so cosine similarity between them
+is meaningless — one call quietly corrupts ranking for every query. Indexing is
+now model-aware, `coverage()` reports the model mix, and semantic search
+**refuses to run** against a mismatched index rather than returning
+confidently-ranked nonsense the user cannot detect.
+
+### 3. ★ Retrieval failed OPEN — a real access-control hole
+
+`_semantic_search` applied a team filter **only for managers**:
+
+```python
+team_id = user.team_id if user.role == "manager" else None   # everyone else: no filter
+```
+
+An agent whose profile was not linked to a `support_agents` row therefore fell
+through to *no restriction* and could retrieve every team's transcripts. The SQL
+path failed closed correctly; the vector path never implemented agent scoping at
+all.
+
+Retrieval is an access path like any other, and "no restriction" must never be
+the default branch. It now resolves a scope per role and **returns nothing** when
+one cannot be established. Three regression tests pin the closed default.
+
+> This is the bug worth remembering: the SQL path had been carefully scoped, so
+> the *feature* looked secure. The second retrieval path, added later, quietly
+> did not inherit that. Two paths to the same data need the same gate.
+
+### Real-provider validation
+
+| Check | Result |
+|---|---|
+| Corpus embedded with `gemini-embedding-2` | 84 calls, 213 chunks, ~95s batched |
+| Batch embedding | 100 per request, vs 213 sequential calls |
+| Semantic quality (real vectors) | router-fault queries return router calls, similarity 0.72–0.75 (mock: 0.2–0.4) |
+| Analytical SQL (real Gemini) | correct `ILIKE` matching, correctly excluded `is_applicable = false` |
+| Latency | 37–57s on the free tier — the reason routing moved to a lite model, and the reason demos run in mock mode |
+
+---
+
 ## Planned
 
 | Path | Phase | Contents |

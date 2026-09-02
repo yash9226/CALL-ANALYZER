@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     gemini_scoring_model: str = "gemini-3.6-flash"
     gemini_summary_model: str = "gemini-3.6-flash"
     gemini_chat_model: str = "gemini-3.6-flash"
+    # Routing is a three-way classification, not reasoning. Running it on the
+    # same model as answer generation added ~18s to every question for no
+    # measurable gain in classification quality.
+    gemini_router_model: str = "gemini-3.1-flash-lite"
     gemini_transcribe_model: str = "gemini-3.5-transcribe"
     gemini_embedding_model: str = "gemini-embedding-2"
     llm_fallback_models: str = "gemini-3.6-flash,gemini-3.1-flash-lite"

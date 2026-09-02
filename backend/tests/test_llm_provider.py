@@ -179,12 +179,45 @@ class TestEmbeddings:
 
         def handler(request):
             captured.update(json.loads(request.content))
-            return httpx.Response(200, json={"embedding": {"values": [0.1] * 768}})
+            n = len(captured["requests"])
+            return httpx.Response(
+                200, json={"embeddings": [{"values": [0.1] * 768} for _ in range(n)]}
+            )
 
         provider = _make_provider(handler)
         vectors = await provider.embed(["hello"], dimensions=768)
-        assert captured["outputDimensionality"] == 768
+        assert captured["requests"][0]["outputDimensionality"] == 768
         assert len(vectors[0]) == 768
+        await provider.close()
+
+    async def test_batches_large_inputs(self):
+        """Indexing a corpus one text at a time is minutes instead of seconds,
+        and multiplies the chance of a transient failure mid-run."""
+        batch_sizes = []
+
+        def handler(request):
+            body = json.loads(request.content)
+            batch_sizes.append(len(body["requests"]))
+            return httpx.Response(
+                200,
+                json={"embeddings": [{"values": [0.1] * 768} for _ in body["requests"]]},
+            )
+
+        provider = _make_provider(handler)
+        vectors = await provider.embed([f"text {i}" for i in range(250)])
+        assert len(vectors) == 250
+        assert batch_sizes == [100, 100, 50]
+        await provider.close()
+
+    async def test_short_batch_response_is_an_error(self):
+        """A response with fewer vectors than texts would silently misalign
+        every embedding after the gap."""
+        def handler(request):
+            return httpx.Response(200, json={"embeddings": [{"values": [0.1] * 768}]})
+
+        provider = _make_provider(handler)
+        with pytest.raises(LLMError, match="Expected 3 embeddings"):
+            await provider.embed(["a", "b", "c"])
         await provider.close()
 
 
@@ -217,3 +250,39 @@ class TestCostEstimation:
 
     def test_unknown_model_does_not_crash(self):
         assert estimate_cost("some-future-model", 1000, 1000) == 0.0
+
+
+class TestEmbeddingFallbackPolicy:
+    """The fallback ladder holds GENERATION models. Applying it to embeddings
+    turns a transient failure into a permanent 404, because a chat model has no
+    embedContent endpoint — observed while indexing the real corpus."""
+
+    async def test_embeddings_never_fall_back_to_a_chat_model(self):
+        models_tried = []
+
+        def handler(request):
+            model = str(request.url).split("/models/")[1].split(":")[0]
+            models_tried.append(model)
+            return httpx.Response(503, json={"error": {"message": "busy"}})
+
+        provider = _make_provider(handler)
+        with pytest.raises(LLMError):
+            await provider.embed(["hello"])
+
+        # Retries the embedding model only — never model-b or model-c.
+        assert set(models_tried) == {"gemini-embedding-2"}
+        await provider.close()
+
+    async def test_generation_still_falls_back(self):
+        """The policy change must not disable the ladder where it belongs."""
+        seen = []
+
+        def handler(request):
+            model = str(request.url).split("/models/")[1].split(":")[0]
+            seen.append(model)
+            return _ok({"score": 1}) if model == "model-b" else httpx.Response(503, json={})
+
+        provider = _make_provider(handler)
+        result = await provider.generate_json("p", SCHEMA)
+        assert result.model == "model-b"
+        await provider.close()

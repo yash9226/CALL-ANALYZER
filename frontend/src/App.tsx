@@ -4,6 +4,7 @@ import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import Admin from "@/pages/Admin";
 import CallDetail from "@/pages/CallDetail";
+import Chat from "@/pages/Chat";
 import Calls from "@/pages/Calls";
 import Dashboard from "@/pages/Dashboard";
 import Placeholder from "@/pages/Placeholder";
@@ -32,7 +33,7 @@ export default function App() {
               <Route path="calls" element={<Calls />} />
               <Route path="calls/:callId" element={<CallDetail />} />
               <Route path="admin" element={<Admin />} />
-              <Route path="chat" element={<Placeholder title="Assistant" phase="Phase 7" />} />
+              <Route path="chat" element={<Chat />} />
             </Route>
           </Routes>
           </BrowserRouter>

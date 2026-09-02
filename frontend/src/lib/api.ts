@@ -567,6 +567,75 @@ export interface TopicBreakdown {
   avg_sentiment: number | null;
 }
 
+// ─── Assistant (chat) ───────────────────────────────────────────────────────
+
+export type RetrievalMode = "semantic" | "analytical" | "hybrid";
+
+export interface ChatCitation {
+  call_id: string;
+  call_code: string;
+  agent_name: string | null;
+  team_name: string | null;
+  score_percentage: number | null;
+  excerpt: string;
+  turn_start: number;
+  turn_end: number;
+  similarity: number;
+}
+
+export interface ChatAnswer {
+  answer: string;
+  /** Which retrieval path answered this. Surfaced so the user knows whether a
+   *  number came from an aggregation or from reading transcripts. */
+  retrieval_mode: RetrievalMode;
+  router_reasoning: string | null;
+  citations: ChatCitation[];
+  rows: Array<Record<string, unknown>>;
+  /** The SQL behind an analytical answer. Shown so a manager can verify any
+   *  figure — an uncheckable number in a QA tool is worse than none. */
+  generated_sql: string | null;
+  sql_error: string | null;
+  confidence: "high" | "medium" | "low" | null;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  latency_ms: number;
+}
+
+export interface ChatSession {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+}
+
+export interface ChatMessage {
+  id: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  citations: ChatCitation[];
+  generated_sql: string | null;
+  retrieval_mode: RetrievalMode | null;
+  model: string | null;
+  latency_ms: number | null;
+  error_message: string | null;
+  created_at: string;
+}
+
+export interface IndexStatus {
+  with_transcript: number;
+  embedded: number;
+  chunks: number;
+  missing_vectors: number;
+  /** Chunks embedded with a model other than the configured one. Non-zero means
+   *  the index compares vectors from incompatible spaces — every search is
+   *  silently degraded until it is rebuilt. */
+  stale_chunks: number;
+  current_model: string;
+  models_in_index: Record<string, number>;
+}
+
 // ─── Ingestion, evaluations, meta ───────────────────────────────────────────
 
 export interface IngestResult {
@@ -789,6 +858,27 @@ export const api = {
 
     queue: (status?: string) =>
       request<JobQueue>("/api/evaluations/jobs/queue", {}, { status }),
+  },
+
+  chat: {
+    ask: (question: string, sessionId?: string) =>
+      request<ChatAnswer>("/api/chat/ask", {
+        method: "POST",
+        body: JSON.stringify({ question, session_id: sessionId ?? null }),
+      }),
+    sessions: () => request<ChatSession[]>("/api/chat/sessions"),
+    createSession: (title = "New conversation") =>
+      request<ChatSession>("/api/chat/sessions", {
+        method: "POST",
+        body: JSON.stringify({ title }),
+      }),
+    messages: (sessionId: string) =>
+      request<ChatMessage[]>(`/api/chat/sessions/${sessionId}/messages`),
+    indexStatus: () => request<IndexStatus>("/api/chat/index/status"),
+    buildIndex: (force = false) =>
+      request<{ calls_embedded: number; chunks_created: number; failed: number }>(
+        "/api/chat/index/build", { method: "POST" }, { force },
+      ),
   },
 
   ingestion: {

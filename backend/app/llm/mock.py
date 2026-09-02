@@ -374,6 +374,9 @@ class MockProvider:
             "summary": self._summary,
             "sentiment": self._sentiment,
             "risk": self._risk,
+            "chat_route": self._chat_route,
+            "chat_sql": self._chat_sql,
+            "chat_answer": self._chat_answer,
         }.get(task or "", self._generic)
 
         parsed = handler(context, schema)
@@ -552,6 +555,122 @@ class MockProvider:
                     "turn_index": turn_index, "quoted_text": quote,
                 })
         return {"flags": flags}
+
+    # ── Chat handlers ───────────────────────────────────────────────────────
+    # Keyword routing, not comprehension. Good enough to exercise every path of
+    # the assistant offline, and honest about what it is: the real router reads
+    # the question, this one matches words in it.
+
+    _ANALYTICAL_WORDS = ("which agent", "which team", "lowest", "highest", "average",
+                         "how many", "count", "top ", "worst", "best", "trend", "rank",
+                         "most ", "least ", "compare", "rate", "total", "breakdown")
+    _SEMANTIC_WORDS = ("show me", "find", "mentioned", "said", "example", "quote",
+                        "where the customer", "talked about", "complained")
+
+    def _chat_route(self, context: dict, _schema: dict) -> dict:
+        q = str(context.get("question", "")).lower()
+        analytical = any(w in q for w in self._ANALYTICAL_WORDS)
+        semantic = any(w in q for w in self._SEMANTIC_WORDS)
+
+        if analytical and semantic:
+            mode = "hybrid"
+        elif analytical:
+            mode = "analytical"
+        else:
+            mode = "semantic"
+
+        return {
+            "mode": mode,
+            "reasoning": f"Keyword routing (offline mode) selected '{mode}'.",
+            "search_query": context.get("question", ""),
+        }
+
+    def _chat_sql(self, context: dict, _schema: dict) -> dict:
+        """Return a real, safe query for the common question shapes.
+
+        Deliberately narrow. A wrong query that still runs would produce a
+        confidently wrong answer, which is worse than an honest miss — so
+        anything unrecognised falls back to a plain leaderboard.
+        """
+        q = str(context.get("question", "")).lower()
+
+        if "empathy" in q or "emotion" in q:
+            sql = (
+                "select v.agent_name, v.team_name, "
+                "round(avg(cs.normalized) * 100, 1) as avg_empathy, count(*) as calls "
+                "from criterion_scores cs "
+                "join v_call_overview v on v.evaluation_id = cs.evaluation_id "
+                "where cs.section_code = 'COMMUNICATION' "
+                "and cs.subsection_code = 'COMM_EMPATHY' and cs.is_applicable "
+                "group by v.agent_name, v.team_name order by avg_empathy asc limit 10"
+            )
+        elif "auto-fail" in q or "auto fail" in q or "fail" in q:
+            sql = (
+                "select cs.criterion_name, count(*) as failures "
+                "from criterion_scores cs "
+                "join v_call_overview v on v.evaluation_id = cs.evaluation_id "
+                "where cs.is_critical_snapshot and cs.is_applicable and cs.normalized < 0.5 "
+                "group by cs.criterion_name order by failures desc limit 10"
+            )
+        elif "flag" in q or "risk" in q or "compliance" in q:
+            sql = (
+                "select rf.flag_type, rf.severity, count(*) as count "
+                "from risk_flags rf "
+                "join v_call_overview v on v.evaluation_id = rf.evaluation_id "
+                "where not rf.is_false_positive "
+                "group by rf.flag_type, rf.severity order by count desc limit 15"
+            )
+        elif "team" in q:
+            sql = (
+                "select team_name, count(*) as calls, "
+                "round(avg(score_percentage), 1) as avg_score "
+                "from v_call_overview group by team_name order by avg_score asc limit 10"
+            )
+        else:
+            sql = (
+                "select agent_name, team_name, evaluated_calls, avg_score, auto_fails "
+                "from v_agent_scorecard order by avg_score asc limit 10"
+            )
+
+        return {"sql": sql, "explanation": "Offline keyword-matched query."}
+
+    def _chat_answer(self, context: dict, _schema: dict) -> dict:
+        rows = context.get("rows") or []
+        chunks = context.get("chunks") or []
+        mode = context.get("mode", "semantic")
+
+        if context.get("index_error"):
+            return {
+                "answer": f"I cannot search transcripts right now: {context['index_error']}",
+                "cited_call_codes": [], "confidence": "low",
+            }
+        if context.get("sql_error"):
+            return {
+                "answer": f"I could not run a query for that: {context['sql_error']}",
+                "cited_call_codes": [], "confidence": "low",
+            }
+
+        parts: list[str] = []
+        if rows:
+            keys = [k for k in rows[0].keys()]
+            parts.append(f"Found {len(rows)} result(s).\n")
+            for r in rows[:5]:
+                parts.append("- " + " · ".join(f"{k}: {r[k]}" for k in keys[:4]))
+        if chunks:
+            parts.append(f"\nDrawn from {len(chunks)} transcript excerpt(s):")
+            for c in chunks[:4]:
+                # Collapse the chunk's own newlines: they would render as
+                # separate paragraphs and break the bullet apart.
+                excerpt = " ".join(str(c["content"]).split())[:140]
+                parts.append(f"- **{c['call_code']}** ({c['agent_name']}): {excerpt}…")
+        if not parts:
+            parts.append("I did not find evidence to answer that.")
+
+        return {
+            "answer": "\n".join(parts),
+            "cited_call_codes": [c["call_code"] for c in chunks[:5]],
+            "confidence": "medium" if (rows or chunks) else "low",
+        }
 
     def _generic(self, context: dict, schema: dict) -> Any:
         """Schema-shaped filler for any task without a dedicated handler."""

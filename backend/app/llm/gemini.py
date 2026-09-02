@@ -75,14 +75,22 @@ class GeminiProvider:
 
     # ── Core request with retry + fallback ──────────────────────────────────
 
-    async def _post(self, path: str, payload: dict) -> tuple[dict, int, str, list[str]]:
-        """POST with backoff across a model ladder.
+    async def _post(
+        self, path: str, payload: dict, *, allow_fallback: bool = True
+    ) -> tuple[dict, int, str, list[str]]:
+        """POST with backoff, optionally across a model ladder.
 
         Returns (response_json, total_attempts, model_that_succeeded,
         models_that_failed_first).
+
+        `allow_fallback=False` for embeddings. The ladder holds GENERATION
+        models, and falling back from an embedding model to a chat model
+        produces a 404 — the chat model has no embedContent endpoint. That
+        turned a transient embedding failure into a permanent one, wasting the
+        retry budget on models that could never succeed.
         """
         model = path.split("/")[1].split(":")[0]
-        ladder = [model, *self.fallback_models]
+        ladder = [model, *self.fallback_models] if allow_fallback else [model]
 
         attempts = 0
         tried: list[str] = []
@@ -218,26 +226,48 @@ class GeminiProvider:
 
     # ── Embeddings ──────────────────────────────────────────────────────────
 
+    # The API accepts up to 100 requests per batch. Indexing a corpus one text
+    # at a time turns a few seconds into several minutes and multiplies the
+    # chances of hitting a transient failure mid-run.
+    EMBED_BATCH_SIZE = 100
+
     async def embed(self, texts: list[str], *, dimensions: int = 768) -> list[list[float]]:
-        """Embed texts one call at a time.
+        """Embed texts in batches.
 
         768 dimensions rather than the model's native 3072: pgvector's HNSW
         index cannot exceed 2000, and the vector(768) column is fixed in
         migration 0008.
         """
         vectors: list[list[float]] = []
-        for text in texts:
+
+        for start in range(0, len(texts), self.EMBED_BATCH_SIZE):
+            batch = texts[start : start + self.EMBED_BATCH_SIZE]
             data, _, _, _ = await self._post(
-                f"models/{self.embedding_model}:embedContent",
+                f"models/{self.embedding_model}:batchEmbedContents",
                 {
-                    "content": {"parts": [{"text": text}]},
-                    "outputDimensionality": dimensions,
+                    "requests": [
+                        {
+                            "model": f"models/{self.embedding_model}",
+                            "content": {"parts": [{"text": text}]},
+                            "outputDimensionality": dimensions,
+                        }
+                        for text in batch
+                    ]
                 },
+                allow_fallback=False,
             )
-            values = data.get("embedding", {}).get("values")
-            if not values:
-                raise LLMError(f"Embedding response contained no values: {str(data)[:200]}")
-            vectors.append(values)
+            embeddings = data.get("embeddings")
+            if not embeddings or len(embeddings) != len(batch):
+                raise LLMError(
+                    f"Expected {len(batch)} embeddings, got "
+                    f"{len(embeddings) if embeddings else 0}"
+                )
+            for item in embeddings:
+                values = item.get("values")
+                if not values:
+                    raise LLMError("Embedding response contained no values.")
+                vectors.append(values)
+
         return vectors
 
     async def transcribe(self, audio_bytes: bytes, mime_type: str, model: str) -> LLMResult:

@@ -7,7 +7,7 @@ way to review them. CALL-ANALYZER evaluates every call against a **hierarchical,
 business-configurable quality framework** using a multi-agent AI pipeline, and
 makes every score explainable down to the exact sentence that justified it.
 
-> **Status: Phases 1-6 complete.** Schema, scoring engine, backend API,
+> **Status: Phases 1-7 complete.** Schema, scoring engine, backend API,
 > the five-agent evaluation pipeline and dashboard analytics are built and
 > verified — **133 backend tests** and 4 SQL scoring-engine assertions passing,
 > with all 84 seeded calls evaluated end to end. The typed frontend contract is
@@ -98,7 +98,7 @@ uv pip install -e ".[dev]"
 Interactive API docs: <http://localhost:8000/docs> — 29 endpoints.
 
 ```bash
-.venv/bin/python -m pytest tests/ -q      # 136 tests
+.venv/bin/python -m pytest tests/ -q      # 180 tests
 ```
 
 ### Run the evaluation pipeline
@@ -193,8 +193,8 @@ reason recorded — so the UI never shows an unexplained zero.
 | 4 | Aggregation & score computation wiring | ✅ **Done in Phase 3** |
 | 5 | Dashboard analytics API + typed frontend contract + Lovable prompt | ✅ **Backend complete**; UI generation next |
 | 6 | Admin panel for the dynamic framework | ✅ **Complete & verified** |
-| 7 | RAG chatbot | ⬜ Next |
-| 8 | Polish, architecture diagram, report write-up | ⬜ |
+| 7 | RAG chatbot | ✅ **Complete & verified** |
+| 8 | Polish, architecture diagram, report write-up | ⬜ Next |
 
 ---
 
