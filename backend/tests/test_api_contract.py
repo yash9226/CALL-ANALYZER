@@ -219,6 +219,25 @@ class TestFrameworkContract:
             "Criterion",
         )
 
+    async def test_version_counts_are_populated_not_defaulted(self, client):
+        """Presence is not enough. These fields are optional in the Pydantic
+        model, so a backend that omits them serialises zeroes and the UI shows
+        "0 sections" over a full tree — which is exactly what happened. Assert
+        the values agree with the tree they describe."""
+        tree = (await client.get("/api/framework/active")).json()
+
+        actual_sections = len(tree["sections"])
+        actual_subsections = sum(len(s["subsections"]) for s in tree["sections"])
+        actual_criteria = sum(
+            len(ss["criteria"]) for s in tree["sections"] for ss in s["subsections"]
+        )
+
+        assert tree["section_count"] == actual_sections == 5
+        assert tree["subsection_count"] == actual_subsections == 12
+        assert tree["criterion_count"] == actual_criteria == 31
+        # The seeded corpus is evaluated against this version.
+        assert tree["evaluation_count"] > 0
+
     async def test_validation_shape(self, client):
         version_id = (await client.get("/api/framework/active")).json()["id"]
         body = (await client.get(f"/api/framework/versions/{version_id}/validate")).json()

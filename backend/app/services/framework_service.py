@@ -60,8 +60,31 @@ async def list_versions() -> list[dict]:
 
 
 async def get_version_row(version_id: UUID) -> dict:
+    """Fetch a version WITH its node counts.
+
+    The counts are part of FrameworkVersionSummary, which
+    FrameworkVersionDetail extends — so omitting them here silently produced
+    zeroes in the API response and the admin header read
+    "0 sections · 0 sub-sections · 0 criteria" over a fully populated tree.
+    """
     row = await db.fetchrow(
-        "select *, status::text as status from framework_versions where id = $1", version_id
+        """
+        select fv.*, fv.status::text as status,
+               (select count(*) from sections s
+                 where s.framework_version_id = fv.id)                     as section_count,
+               (select count(*) from subsections ss
+                  join sections s on s.id = ss.section_id
+                 where s.framework_version_id = fv.id)                     as subsection_count,
+               (select count(*) from criteria c
+                  join subsections ss on ss.id = c.subsection_id
+                  join sections s on s.id = ss.section_id
+                 where s.framework_version_id = fv.id)                     as criterion_count,
+               (select count(*) from evaluations e
+                 where e.framework_version_id = fv.id)                     as evaluation_count
+          from framework_versions fv
+         where fv.id = $1
+        """,
+        version_id,
     )
     if not row:
         raise NotFound(f"Framework version {version_id} does not exist.")

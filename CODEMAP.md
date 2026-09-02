@@ -806,6 +806,90 @@ error path in the UI.
 
 ---
 
+## `frontend/src/pages/Admin.tsx` + `components/framework/` ✅ *(Phase 6)*
+
+The framework admin panel — the screen where the project's central claim becomes
+something a business user can actually do.
+
+| File | Purpose |
+|---|---|
+| `Admin.tsx` | Page state, 10 mutations, publish/apply orchestration |
+| `VersionBar.tsx` | Version identity, live validation, auto-balance, publish, history |
+| `FrameworkTree.tsx` | Three-level editor with inline weights and enable switches |
+| `WeightInput.tsx` | Commit-on-blur number input + `WeightSum` balance chip |
+| `CriterionEditor.tsx` | Right-hand sheet; guidance is the primary field |
+| `PublishDialog.tsx` | Publish confirmation + the apply-to-history result |
+
+### Design decisions
+
+> **The published version is never editable in the UI.** When viewing it there is
+> exactly one action — "Edit framework" — which calls `api.framework.draft()`.
+> The user should never discover the immutability rule by hitting a 409.
+
+> **`WeightSum` beside every parent** shows the sum of its *enabled* children,
+> green at 100% and red otherwise. Without it an unbalanced tree is only
+> discovered at publish time and the user has to hunt for the offending level.
+> Only enabled children count, because disabling a node removes it from the
+> weight denominator too.
+
+> **Weight inputs commit on blur, not per keystroke.** Committing per character
+> would fire a PATCH per digit and make the live validation flicker through
+> invalid states while the user is mid-number.
+
+> **`guidance` is the visual centrepiece** of the criterion editor — ten rows,
+> monospace, primary-tinted, labelled "sent to the AI", with the helper text
+> "editing it changes how every future call is scored, with no code deployment".
+> That field *is* the configurability mechanism, so burying it under an
+> "advanced" toggle would misrepresent the product.
+
+> **A draft in progress is surfaced on the published view.** Found while testing:
+> a draft from an earlier session was invisible, so a user would click "Edit
+> framework" and be silently dropped into someone else's half-finished work.
+> The page now names it and offers to open it.
+
+### `ApplyDialog` — the demo moment
+
+After publishing, the result is rendered as two distinct outcomes:
+
+> **"84 evaluations recomputed instantly — zero AI calls, zero cost."**
+> *"The transcripts were already scored — only the arithmetic changed."*
+
+and, when applicable, *"N queued for re-scoring because this version added new
+criteria."* That split is the architecture made visible.
+
+### Verified end to end in a real browser
+
+The whole workflow was driven headlessly against the live backend:
+
+| Step | Result |
+|---|---|
+| View published version | switches disabled, immutability notice shown |
+| Click "Edit framework" | cloned to draft v2, controls become editable |
+| Type `60` into a section weight | `total 145% ⚠`, "1 issue" badge, **Publish disabled** |
+| Open the issue popover | *"Enabled section weights sum to 145.00, expected 100"* |
+| Auto-balance | rebalanced to 100%, Publish re-enabled |
+| Publish → Apply to history | **"84 evaluations recomputed instantly"** |
+
+Measured impact of that re-weight: `RESOLUTION` 30% → 43%, dashboard average
+55.01% → 54.0% — and `agent_runs` stayed at **420, unchanged**. No LLM was
+called. That is the claim, demonstrated rather than asserted.
+
+Zero console errors on every step.
+
+### A bug this phase surfaced
+
+The version header read **"0 sections · 0 sub-sections · 0 criteria"** above a
+fully populated tree. `get_tree()` returned the raw `framework_versions` row
+without the count columns, and because those fields are optional in the Pydantic
+model they serialised as zeroes rather than failing.
+
+The contract test had not caught it, because it only asserted field
+**presence** — and a field defaulting to `0` is present. It now asserts the
+counts **agree with the tree they describe**, which is the property that
+actually matters.
+
+---
+
 ## Planned
 
 | Path | Phase | Contents |
