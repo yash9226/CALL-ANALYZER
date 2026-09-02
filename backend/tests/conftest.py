@@ -53,3 +53,20 @@ async def clean_calls(client):
     yield
     await db.execute("delete from calls where call_code like 'TEST-%'")
     await db.execute("delete from ingestion_batches where filename like 'test_%'")
+
+
+async def drop_evaluation(evaluation_id: str) -> None:
+    """Delete a test-created evaluation AND restore the previous current one.
+
+    Deleting a promoted evaluation would otherwise leave the call with no
+    current evaluation at all, silently degrading the seeded dataset — which is
+    exactly what happened and showed up as 82/84 coverage on the dashboard.
+    """
+    row = await db.fetchrow(
+        "select call_id, supersedes from evaluations where id = $1::uuid", evaluation_id
+    )
+    await db.execute("delete from evaluations where id = $1::uuid", evaluation_id)
+    if row and row["supersedes"]:
+        await db.execute(
+            "update evaluations set is_current = true where id = $1", row["supersedes"]
+        )

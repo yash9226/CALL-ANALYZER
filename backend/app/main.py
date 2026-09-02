@@ -15,7 +15,7 @@ from app import db
 from app.config import get_settings
 from app.errors import AppError, app_error_handler, postgres_error_handler
 from app.llm import close_provider
-from app.routers import calls, evaluations, framework, ingestion, meta
+from app.routers import analytics, calls, evaluations, framework, ingestion, meta
 
 settings = get_settings()
 
@@ -48,10 +48,10 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="CALL-ANALYZER API",
-    version="0.3.0",
+    version="0.5.0",
     description=(
         "AI-powered customer support call intelligence.\n\n"
-        "**Phase 3** — multi-agent evaluation pipeline.\n\n"
+        "**Phase 5** — dashboard analytics.\n\n"
         "The framework is versioned copy-on-write: published versions are immutable, "
         "edits happen on a draft, and publishing validates that weights sum to 100 at "
         "every level. Re-weighting a rubric re-scores history with zero LLM calls."
@@ -75,8 +75,9 @@ app.include_router(framework.router)
 app.include_router(calls.router)
 app.include_router(ingestion.router)
 app.include_router(evaluations.router)
+app.include_router(analytics.router)
 
 
 @app.get("/", include_in_schema=False)
 async def root():
-    return {"name": "CALL-ANALYZER API", "version": "0.3.0", "docs": "/docs"}
+    return {"name": "CALL-ANALYZER API", "version": "0.5.0", "docs": "/docs"}

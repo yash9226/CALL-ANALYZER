@@ -23,7 +23,7 @@ CALL-ANALYZER/
 ├── scripts/               ✅ Developer utilities
 │   └── generate_seed_calls.py
 ├── backend/               ✅ FastAPI app (Phase 2) + pipeline (Phase 3-4, 7)
-├── frontend/              ⬜ React dashboard                (Phase 5-6)
+├── frontend/              🚧 Typed API contract ready (Phase 5); UI via Lovable
 ├── docs/                  ✅ Architecture and report material
 ├── .env.example           ✅ Environment template
 ├── CODEMAP.md             ✅ This file
@@ -667,10 +667,103 @@ The evaluation still completed with all 31 criteria scored and no errors.
 
 ---
 
+## `backend/app/services/analytics_service.py` ✅ *(Phase 5)*
+
+| Function | Backs |
+|---|---|
+| `overview()` | Six KPI cards, each with period-over-period change |
+| `trend()` | The headline time-series chart (day/week/month) |
+| `section_performance()` | "Where are we weak" bar chart, weakest first |
+| `criterion_performance()` | The coaching list, with fail rates |
+| `agent_leaderboard()` | Agent table, including `score_stddev` |
+| `score_distribution()` | Histogram in 10-point bands + grade tally |
+| `flag_summary()` | Risk counts by type/severity + recent open flags |
+| `topic_breakdown()` | Volume and score by topic tag |
+
+> **Aggregation happens in Postgres, not the browser.** Shipping thousands of
+> rows to the client to reduce in JavaScript would be slow, would leak data the
+> caller may not be allowed to see, and would put the definition of a metric in
+> the client.
+
+> **Scoping is derived from the caller's profile, never trusted from the
+> request.** A manager hitting `/overview` gets their team's overview without
+> passing `team_id`. `_scope()` **fails closed**: a manager with no team sees
+> zero calls, not all of them. Tested explicitly.
+
+> **Metric definitions that charts silently depend on:** `fail_rate_pct` counts
+> only *applicable* scores in both numerator and denominator, so a criterion that
+> rarely applies is not misreported as widely failed. `score_distribution()`
+> emits all ten bands including empty ones, so the x-axis is stable rather than
+> collapsing gaps and misleading the reader.
+
+> `change_pct` compares against the immediately preceding window of **equal
+> length**, and returns `null` — not 0 — when there is no comparable prior data.
+
+## `backend/app/routers/analytics.py` ✅
+Eight endpoints, all taking the same filter set (`date_from`, `date_to`,
+`team_id`, `support_agent_id`).
+
+## `frontend/src/lib/api.ts` ✅ — **the seam**
+880 lines: every TypeScript type mirroring the live schema, an `api.*` function
+per endpoint, `ApiError` with an `isConflict` helper, and display helpers
+(`formatScore`, `gradeFor`, `formatDuration`, `highlightSegments`).
+
+Type-checks clean under `strict: true`.
+
+> **Why a hand-written contract instead of letting Lovable improvise.** Left
+> alone, Lovable creates its own Supabase tables and queries; merging that into a
+> real schema is miserable. Pinning every network call to one typed module makes
+> integration a swap (`MOCK = false` + a base URL) rather than a rewrite.
+
+> Display helpers live here so formatting cannot drift between pages — in
+> particular `formatScore()`, which renders an inapplicable criterion as "N/A"
+> rather than 0. Rendering it as 0 would misrepresent the agent, since the
+> backend excludes it from the weighted denominator entirely.
+
+> `highlightSegments()` slices `full_text` using stored `char_start`/`char_end`
+> offsets. The frontend must never text-search for a citation's `quoted_text` —
+> models paraphrase, so that search fails.
+
+## `docs/LOVABLE_PROMPT.md` ✅
+The paste-ready prompt: non-negotiable rules, design system, semantic colour
+table, page-by-page specification for the dashboard / calls list / drill-down,
+behaviour requirements, realistic mock values drawn from the actual seeded
+corpus, and a verification checklist.
+
+## `backend/tests/test_api_contract.py` ✅ — guards the seam
+18 tests freezing the field names the frontend depends on.
+
+> The frontend is generated externally against hand-written types, so nothing
+> otherwise stops the backend drifting away from them — a renamed field compiles
+> fine on both sides and simply renders as `undefined`. These tests turn that
+> into a build failure. Extra fields are allowed (additive changes are
+> backwards-compatible); removals and renames are not.
+
+Also asserts the **error envelope** (`error.code` / `.message` / `.details`),
+because `ApiError` destructures it and a bare string body would break every
+error path in the UI.
+
+## Phase 5 verification
+
+| Check | Result |
+|---|---|
+| Backend test suite | **133 passing** (30 parser · 24 API · 23 pipeline · 16 LLM · 22 analytics · 18 contract) |
+| API surface | 42 operations across 39 paths |
+| `api.ts` under `tsc --strict` | clean |
+| Evaluation coverage | 84 / 84 calls |
+
+> **A bug this phase surfaced in my own tests.** Dashboard coverage read 82/84.
+> Cause: test cleanup deleted a *promoted* evaluation, leaving those calls with
+> no current evaluation and silently degrading the seeded dataset.
+> `conftest.drop_evaluation()` now restores the superseded evaluation on
+> teardown. The dashboard is what made it visible — aggregate views expose data
+> integrity problems that per-record tests walk straight past.
+
+---
+
 ## Planned
 
 | Path | Phase | Contents |
 |---|---|---|
-| `frontend/src/lib/api.ts` | 5 | Typed API contract — the Lovable seam |
 | `frontend/src/pages/` | 5-6 | Dashboard, call drill-down, framework admin, chat |
 | `docs/ARCHITECTURE.md` | 8 | Report-ready write-up + diagrams |

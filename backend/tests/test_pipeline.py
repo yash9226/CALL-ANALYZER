@@ -14,6 +14,7 @@ from app import db
 from app.config import get_settings
 from app.llm import reset_provider
 from app.llm.mock import evaluate_rule
+from tests.conftest import drop_evaluation
 
 @pytest_asyncio.fixture
 async def mock_mode():
@@ -45,7 +46,7 @@ async def evaluated_call(client, mock_mode):
     )
     result = await evaluation_service.run_evaluation(call["id"], trigger_reason="initial")
     yield {"call_id": call["id"], "call_code": call["call_code"], **result}
-    await db.execute("delete from evaluations where id = $1::uuid", result["evaluation_id"])
+    await drop_evaluation(result["evaluation_id"])
 
 
 class TestMockRuleEngine:
@@ -266,7 +267,10 @@ class TestEvaluationLifecycle:
         assert rows[1]["is_current"] is True
         assert str(rows[1]["supersedes"]) == first["evaluation_id"]
 
+        # Restore the call to having exactly one current evaluation, so the
+        # seeded dataset stays complete for the dashboard.
         await db.execute("delete from evaluations where call_id = $1", call["id"])
+        await evaluation_service.run_evaluation(call["id"], trigger_reason="initial")
 
     async def test_evaluating_a_call_without_a_transcript_is_refused(self, client, mock_mode):
         from app.errors import Conflict
@@ -304,7 +308,7 @@ class TestPipelineApi:
         assert r.status_code == 202
         body = r.json()
         assert body["score_percentage"] is not None
-        await db.execute("delete from evaluations where id = $1::uuid", body["evaluation_id"])
+        await drop_evaluation(body["evaluation_id"])
 
     async def test_queued_evaluation_creates_a_job(self, client, mock_mode):
         call = await db.fetchrow("select id from calls order by started_at limit 1")
@@ -321,4 +325,4 @@ class TestPipelineApi:
         assert job["job_type"] == "evaluate"
 
         await db.execute("delete from jobs where id = $1::uuid", body["job_id"])
-        await db.execute("delete from evaluations where id = $1::uuid", body["evaluation_id"])
+        await drop_evaluation(body["evaluation_id"])
