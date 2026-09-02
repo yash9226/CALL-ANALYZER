@@ -1,0 +1,51 @@
+PASTE THIS WHOLE FILE AS ONE MESSAGE - adds the Assistant (chat) page.
+Only send this after the previous file's build has FINISHED.
+======================================================================
+
+BUILD THIS NOW. Do not ask clarifying questions, do not ask me to re-supply
+the specification, and do not pause for confirmation — everything you need is
+in this message. If a detail is unspecified, pick a sensible default, note it
+in one line at the end, and keep building.
+
+Add the Assistant at /chat. Do not modify existing pages.
+
+A manager-facing chat that answers questions over call transcripts and scores.
+
+## LAYOUT
+Two columns: a 260px session sidebar, and the conversation.
+
+**Sidebar**: "New conversation" button, then session list with title and
+relative time. Active session highlighted.
+
+**Conversation**: messages centred at max-width 760px.
+- User messages: right-aligned, primary-tinted bubble.
+- Assistant messages: left-aligned, no bubble — plain text on the page
+  background, rendered as markdown, so long answers read like a document rather
+  than a chat balloon.
+- Streaming: a blinking caret while generating.
+
+**★ Grounding — the anti-hallucination affordance**
+Every assistant answer carries citations. Beneath each answer render:
+- A muted caption: "Based on {n} calls".
+- Citation cards in a horizontal scroll: call_code (mono), agent name, and the
+  matched excerpt truncated to two lines. Clicking opens that call in a new tab.
+- When the answer used a SQL aggregation, a collapsible "How I calculated this"
+  section showing the generated SQL in a syntax-highlighted mono block.
+
+This matters because it is the difference between a chatbot and an analytics
+tool: the manager can verify every number.
+
+**Composer**: auto-growing textarea, Enter to send, Shift+Enter for newline,
+send button, and a stop button while streaming.
+
+**Empty state**: heading "Ask about your calls", then four clickable example
+prompts:
+- "Which agents scored lowest on empathy this week?"
+- "Show me calls where the customer mentioned billing issues"
+- "What are the most common reasons for auto-failure?"
+- "Summarise the biggest coaching opportunity for the Technical Support team"
+
+Mock the responses for now, with realistic citations drawn from the seeded data.
+
+## DELIVERABLE
+The chat page, reusing the existing design system.

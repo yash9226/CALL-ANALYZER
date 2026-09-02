@@ -1,0 +1,136 @@
+PASTE THIS WHOLE FILE AS ONE MESSAGE - adds the Framework admin panel.
+Only send this after the previous file's build has FINISHED.
+======================================================================
+
+BUILD THIS NOW. Do not ask clarifying questions, do not ask me to re-supply
+the specification, and do not pause for confirmation — everything you need is
+in this message. If a detail is unspecified, pick a sensible default, note it
+in one line at the end, and keep building.
+
+Add the Framework admin panel at /admin. Do not modify existing pages.
+
+## THE CONCEPT — read this before designing the UI
+
+The quality rubric is a three-level tree: Sections → Sub-sections → Criteria,
+each with a percentage weight. Weights must total 100 at EVERY level.
+
+Rubrics are VERSIONED and copy-on-write:
+- Exactly one version is `published` at a time. A published version is
+  IMMUTABLE — the backend refuses to edit it and returns HTTP 409.
+- Editing happens on a `draft`. Calling api.framework.draft() returns the
+  existing draft, or clones the published version into a new one.
+- Publishing validates the weights, archives the previous version, and promotes
+  the draft — atomically.
+
+So the UI must never attempt to PATCH a published version. Always call
+api.framework.draft() first, and make it visible which version is being edited.
+
+## ═══ LAYOUT ═══
+
+### Version bar (sticky, top of page)
+- Left: version_no and name, plus a status badge — published = success solid,
+  draft = warning outline, archived = muted.
+- Middle: when editing a draft, live validation from
+  api.framework.validate(versionId), polled after every edit (debounced 500ms):
+  - Valid → a success chip "Weights balanced" with a Check icon.
+  - Invalid → a warning chip "{n} issue(s)" that opens a popover listing each
+    issue's `issue` sentence, grouped by `level`.
+- Right: buttons — "Auto-balance" (api.framework.normalize), "Publish"
+  (disabled with a tooltip while invalid), and a version-history dropdown from
+  api.framework.versions().
+
+When viewing a published version, replace the edit controls with a single
+prominent "Edit framework" button that calls api.framework.draft() and shows a
+toast: "Editing draft v{n} — the published version is unchanged."
+
+### The tree editor (main area)
+A nested, collapsible tree. Each level is visually distinct through indentation
+and left border colour, not through boxes inside boxes.
+
+**Section row** — 48px tall, left border 3px chart-1:
+- Drag handle (GripVertical), expand chevron.
+- code in mono 11px muted; name in 14px/600, editable inline on click.
+- Weight: a compact number input with a "%" suffix, 72px wide.
+- An enable/disable Switch. Disabled rows render at 50% opacity with a muted
+  "Disabled" chip.
+- A muted count: "{n} sub-sections · {m} criteria".
+- Row actions on hover: add sub-section, duplicate, delete.
+
+**Sub-section row** — indented 24px, left border 2px chart-2, same controls.
+
+**Criterion row** — indented 48px, left border 2px muted. This is the leaf and
+carries the most:
+- name, and a solid danger "CRITICAL" badge when is_critical.
+- A scoring_type chip: "0–5", "0–10", "Met / Not met", "Numeric".
+- Weight input.
+- Enable Switch.
+- Clicking opens the criterion editor in a right-hand Sheet (see below).
+
+**Weight validity, shown inline.** Beside each parent, show the sum of its
+enabled children's weights. Render it success when it equals 100, danger
+otherwise, e.g. "100%" or "112% ⚠". This is the single most useful affordance on
+the page — the user should never have to hunt for which level is unbalanced.
+
+Drag-and-drop reordering within a level, persisted via
+api.framework.reorder(level, items).
+
+### Criterion editor (right Sheet, 520px)
+Fields, in this order:
+1. **Name** — text input.
+2. **Code** — mono input, uppercase, disabled when editing an existing
+   criterion (codes are how scores are matched across versions).
+3. **Description** — short textarea. Helper: "What this measures, for humans."
+4. **★ Scoring guidance** — a LARGE textarea, minimum 10 rows, monospace,
+   character count shown. This is the most important field on the entire page.
+   Label it "Scoring guidance (sent to the AI)". Helper text: **"This text is
+   sent to the AI model verbatim. Editing it changes how every future call is
+   scored — no code deployment needed."** Give it a subtle primary-tinted
+   background so it reads as special, because it is: this field is the
+   product's core claim.
+5. **Scoring type** — select: Met/Not met (binary), 0–5, 0–10, Numeric.
+   Show max_score and min_score inputs only when Numeric is chosen.
+6. **Weight** — number input with a live "of 100% in this sub-section" caption.
+7. **Critical (auto-fail)** — a Switch inside a danger-tinted callout box:
+   "Failing this criterion forces the entire call score to 0%. Use only for
+   regulatory or policy requirements."
+8. **Allow not-applicable** — a Switch. Helper: "Lets the AI mark this criterion
+   N/A when the situation never arose, instead of scoring it zero."
+9. **Examples** — an optional repeatable list of {score, example, why} rows,
+   used as few-shot anchors for the AI.
+
+Footer: Cancel / Save. Save calls api.framework.updateCriterion.
+
+### Publish flow
+Clicking Publish opens a confirmation Dialog:
+- Heading "Publish version {n}?"
+- A validation summary (must be all-clear to proceed).
+- A body explaining: "This version becomes the active rubric. The current
+  published version will be archived. Historical scores keep referencing the
+  version they were computed under and will not change."
+- Confirm calls api.framework.publish(versionId). On 409, show err.message
+  verbatim in a destructive alert — it names the exact unbalanced level.
+
+### ★ After publishing: the "apply to history" step
+On success, show a follow-up Dialog — this is the project's best demo moment:
+
+"Apply this rubric to existing calls?"
+Body: "Re-weighting is instant and free. Only genuinely new criteria need the
+AI to re-read transcripts."
+Buttons: "Not now" / "Apply to history" → api.framework.apply(versionId).
+
+Render the ReprojectResult prominently:
+- A large success line: "{recomputed_instantly} evaluations recomputed instantly
+  — 0 AI calls, no cost."
+- If queued_for_rescoring > 0, a second warning line: "{n} queued for re-scoring
+  because this version added new criteria."
+
+This distinction is the core architectural claim of the project. Make it look
+like the achievement it is.
+
+### Version history dropdown
+Lists all versions from api.framework.versions(): version_no, name, status
+badge, criterion_count, and evaluation_count. Selecting one opens it read-only.
+Warn on any version where evaluation_count > 0 that scores reference it.
+
+## DELIVERABLE
+The admin page, reusing the existing design system.

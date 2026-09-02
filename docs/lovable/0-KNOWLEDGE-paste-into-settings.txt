@@ -1,0 +1,57 @@
+PASTE THIS INTO: Lovable -> Settings -> Knowledge   (NOT the chat box)
+======================================================================
+
+# CALL-ANALYZER — Project Knowledge
+
+## What this product is
+An AI-powered customer support call intelligence platform. Support teams
+generate thousands of call transcripts. Managers have no scalable way to review
+them. CALL-ANALYZER automatically scores every call against a weighted quality
+rubric using a five-agent AI pipeline, and makes every score explainable down to
+the exact sentence in the transcript that justified it.
+
+## Who uses it
+- **Admin** — owns the quality rubric, sees every team, runs evaluations.
+- **Manager** — reviews their own team's calls, coaches agents, triages
+  compliance flags. This is the primary user; design for them.
+- **Agent** — sees only their own calls and scores.
+
+## The domain, in one paragraph
+A "call" has a transcript split into speaker "turns". A "framework" (rubric) is
+a three-level tree: Sections → Sub-sections → Criteria, each with a percentage
+weight. An "evaluation" scores one call against one framework version, producing
+a score per criterion, rolled up through sub-sections and sections into a final
+percentage and an A–F grade. Two criteria are marked CRITICAL — failing either
+one forces the whole call to 0% ("auto-fail"). Some criteria can be marked "not
+applicable" when the situation never arose.
+
+## CRITICAL TECHNICAL CONSTRAINTS — these override everything else
+
+1. **DO NOT create, connect to, enable, or query Supabase.** Do not create
+   database tables. Do not use the Supabase client. The backend already exists
+   as a separate FastAPI service. This app is a pure API client.
+2. **ALL data comes from `src/lib/api.ts`.** Import from it. Never write `fetch`
+   anywhere else in the codebase.
+3. **DO NOT invent fields.** If a value is not in the TypeScript types in
+   api.ts, the backend does not return it. Render an empty state instead of
+   fabricating data.
+4. **DO NOT redefine the types** in api.ts. Import them.
+5. During UI development, `api.ts` has `export const MOCK = true` and serves
+   fixtures with identical shapes. Build against those.
+
+## Three domain rules the UI must respect
+
+1. **A not-applicable criterion renders as "N/A", never as 0.** The backend
+   removes it from the weighted total entirely. Showing 0 misrepresents the
+   agent's performance.
+2. **An auto-failed call shows 0% together with its reason.** Never display a
+   bare unexplained zero.
+3. **Citation highlighting uses stored character offsets** (`char_start`,
+   `char_end`), never a text search for the quoted string. The AI paraphrases
+   when it quotes, so searching fails. The offsets are guaranteed exact against
+   `transcript.full_text`.
+
+## Product tone
+A serious, information-dense analytics tool that a support manager stares at for
+hours. Calm, precise, trustworthy. Not a marketing site. No hero sections, no
+decorative illustrations, no gradient-filled cards, no emoji in the UI.

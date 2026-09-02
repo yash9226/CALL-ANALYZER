@@ -1,0 +1,181 @@
+PASTE THIS WHOLE FILE AS ONE MESSAGE - adds the Calls list and Call drill-down pages.
+Only send this after the previous file's build has FINISHED.
+======================================================================
+
+BUILD THIS NOW. Do not ask clarifying questions, do not ask me to re-supply
+the specification, and do not pause for confirmation — everything you need is
+in this message. If a detail is unspecified, pick a sensible default, note it
+in one line at the end, and keep building.
+
+Add two pages. Do not modify the design system, the app shell, or the dashboard.
+Reuse the existing global filter bar, score colour rule, and card styles.
+
+## ═══ PAGE: CALLS (route /calls) ═══
+Data: api.calls.list(filters) -> Paginated<CallOverview>
+
+A dense, fast table. This is the workhorse screen — favour information density
+over whitespace here.
+
+### Filter row (above the table, state in the URL)
+- Search input with a Search icon. Placeholder: "Search call code, agent, or
+  transcript text…". Debounce 300ms. Tooltip: "Searches inside transcript
+  content, not just metadata." (It genuinely does — the backend runs full-text
+  search over transcripts.)
+- Grade multi-select A–F.
+- Score range: a dual-handle slider 0–100.
+- Status select.
+- Two toggle chips: "Has flags", "Auto-failed only".
+- Active filters appear as removable chips.
+
+### Columns
+| Column | Content |
+|---|---|
+| Call | call_code in JetBrains Mono 12px; started_at relative, muted, beneath |
+| Agent | agent_name 13px/500; agent_code muted beneath |
+| Team | small outline chip |
+| Duration | formatDuration(duration_seconds) |
+| Score | 16px/700 coloured by the score rule + grade pill. If auto_fail_triggered, replace entirely with a solid danger badge reading "AUTO-FAIL" and show 0% beside it |
+| Sentiment | label badge + sentiment_delta with ↑/↓, green/red |
+| Flags | count badge; solid danger when critical_flag_count > 0; render nothing when 0 |
+| Summary | headline, truncated to one line, muted |
+
+- Sortable headers mapping to sort_by / sort_dir (started_at, score, duration,
+  agent, sentiment).
+- Server-side pagination with limit/offset, page-size select 25/50/100, and a
+  "Showing 1–25 of 84" caption.
+- Row hover: subtle accent background, cursor pointer.
+- Loading: 10 skeleton rows that match the column widths, so the layout does not
+  jump.
+- Two distinct empty states: "No calls have been ingested yet" versus "No calls
+  match these filters" (the latter with a "Clear filters" button).
+- Row click → /calls/{call_id}.
+
+## ═══ PAGE: CALL DRILL-DOWN (route /calls/:callId) ═══
+Data: api.calls.get(callId) -> CallDetail. ONE request returns everything.
+
+THIS IS THE MOST IMPORTANT PAGE IN THE PRODUCT. It is where the platform proves
+its scores are trustworthy rather than magic.
+
+### Header band
+Back link "← Calls". Then call_code (mono, 18px), and a muted metadata row:
+agent name · team · date · duration · channel.
+
+Right side: a large score block — the percentage at 36px/700 coloured by the
+rule, the grade pill beneath.
+
+If auto_fail_triggered: instead render a full-width destructive Alert directly
+under the header, with an AlertTriangle icon, the heading "Auto-fail", and the
+auto_fail_reason text. The score still shows 0%, but never alone — an
+unexplained zero is exactly what this product exists to prevent.
+
+### Summary strip (full width card, under the header)
+From `summary`: headline as 15px/600, summary as body text, then a chip row for
+resolution_status, customer_intent, and each topic. If next_actions is
+non-empty, a small checklist below: action, owner, due.
+
+### Main layout: two columns, 58% / 42%, stacking to one column below 1024px
+
+═══ LEFT COLUMN — TRANSCRIPT ═══
+
+A stats strip at the top, from `statistics`, as five compact tiles:
+- Agent talk ratio as a percentage with a mini progress bar. Amber above 75%,
+  tooltip "Agent dominated the conversation".
+- Questions asked · Interruptions detected · Agent turns · Customer turns.
+
+Then the turn list, in a scrollable container with a sticky header:
+- Agent turns: left-aligned, bg-muted, rounded, max-width 88%.
+- Customer turns: right-aligned, bg-primary at 8% opacity with a primary left
+  border, max-width 88%.
+- Each turn: speaker_label in 11px/600 uppercase muted, then the text at 13px.
+  Show start_ms as "m:ss" in the corner when present.
+- Give every turn `id={`turn-${turn.turn_index}`}` so other panels can scroll
+  to it.
+
+★★★ CITATION HIGHLIGHTING — the single most important interaction ★★★
+
+When the user selects a criterion in the right column, every turn that criterion
+cited must highlight:
+
+- Read the `citations` array on that CriterionScore.
+- For each citation, find the turn where `turn.turn_index === citation.turn_index`.
+- Apply a background tint to that turn: success-soft for polarity "supporting",
+  danger-soft for "detracting", with a 2px left border in the matching solid
+  colour.
+- Smooth-scroll the first highlighted turn into view.
+- Show a floating chip pinned to the top of the transcript panel: "Showing
+  evidence for: {criterion_name}" with an X to clear.
+- For sub-turn precision, use the exported helper highlightSegments(fullText,
+  ranges) with char_start/char_end.
+
+**NEVER search the transcript text for citation.quoted_text.** The AI
+paraphrases when it quotes, so a text search silently fails and highlights
+nothing. Use turn_index and the stored char offsets, which the backend
+guarantees are exact.
+
+═══ RIGHT COLUMN — five tabs ═══
+
+**Tab 1 — Scores** (default)
+An accordion grouped by section. Join section_scores, subsection_scores and
+criterion_scores on section_code / subsection_code.
+
+- Section header row: section_name 14px/600, `normalized * 100` as a coloured
+  percentage, a muted weight chip, and a thin progress bar. Expanded by default.
+- Sub-section rows: indented 16px, same treatment at 13px, plus a muted
+  "{criteria_scored}/{criteria_total} scored" caption.
+- Criterion rows: indented 32px.
+  - Left: criterion_name at 13px. A solid danger "CRITICAL" badge when
+    is_critical_snapshot.
+  - Right: formatScore(score) from api.ts, a confidence dot (a small circle
+    filled proportionally to `confidence`, tooltip "Model confidence: 72%"), and
+    a citation-count badge with a Quote icon.
+  - **Clicking the row highlights that criterion's citations in the transcript
+    and marks the row as selected with a primary ring.**
+  - Expanding shows `reasoning` as body text, then each citation as a blockquote
+    with a left border in its polarity colour, the quoted text, and a "Jump to
+    turn {n}" link that scrolls the transcript.
+  - When is_applicable is false: render a muted "N/A" chip instead of a score,
+    with na_reason as the tooltip, and grey the row back. NEVER render 0 —
+    the backend excludes it from the weighted total, so 0 would be a false
+    statement about the agent.
+
+**Tab 2 — Sentiment**
+Recharts AreaChart of sentiment_timeline: x = turn_index, y = score fixed
+−1 to +1. Draw a ReferenceLine at y=0. Tint the area above zero success and
+below zero danger (use two Area series with gradient fills, or split at zero).
+Clicking a point scrolls the transcript to that turn.
+
+Beneath, three stat tiles: Opening, Closing, and Delta (large, signed, coloured)
+plus a trajectory badge ("recovered" gets a success badge — it means the agent
+turned an angry customer around, which is the strongest positive signal in the
+product).
+
+**Tab 3 — Flags**
+Cards from risk_flags: severity badge, title 13px/600, description, a confidence
+bar, and the quoted_text as a blockquote with "Jump to turn {n}". Acknowledged
+flags render muted with a Check icon. Empty state: "No risks flagged."
+
+**Tab 4 — Pipeline**
+A vertical timeline of agent_runs ordered by step_order. This tab exists to
+prove five distinct AI agents ran, rather than one prompt with headings — make
+it look convincing.
+
+Each step: a connector line and status dot (success/danger/muted), agent_name in
+13px/600, and a muted metadata row: model · {latency_ms}ms ·
+{input_tokens}→{output_tokens} tokens. When attempt_count > 1, an amber chip
+"retried ×{n}" with tooltip "The model was rate-limited or timed out; the
+provider retried automatically."
+
+Footer row: total tokens, total latency, and the model(s) used.
+
+**Tab 5 — History**
+Table from evaluation_history: date, score, grade, trigger_reason (formatted:
+"initial" → "Initial evaluation", "framework_change" → "Rubric changed",
+"manual_rerun" → "Manual re-run", "model_upgrade" → "Model upgraded"),
+model_used, and a primary "Current" badge where is_current.
+
+This answers a real question: did this agent's score change because they
+improved, or because we changed the rubric?
+
+## DELIVERABLE
+Both pages, reusing the existing design system. No new dependencies beyond what
+Prompt 1 installed.

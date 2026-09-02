@@ -1,0 +1,1192 @@
+PASTE THIS WHOLE FILE AS ONE MESSAGE IN THE LOVABLE CHAT.
+Select all, copy, paste into Lovable, press Enter. Do not split it up.
+======================================================================
+
+BUILD THIS NOW. Do not ask clarifying questions, do not ask me to re-supply
+the specification, and do not pause for confirmation — everything you need is
+in this message. If a detail is unspecified, pick a sensible default, note it
+in one line at the end, and keep building.
+
+STEP 1 - Create the file src/lib/api.ts with EXACTLY this content:
+
+```typescript
+/**
+ * CALL-ANALYZER — API client and type contract.
+ *
+ * THIS FILE IS THE SEAM between the backend and the UI. It is hand-written to
+ * match the live FastAPI schema exactly (see http://localhost:8000/docs).
+ *
+ * RULES FOR THE FRONTEND
+ * ----------------------
+ * 1. Never call `fetch` anywhere else. Every network call goes through here.
+ * 2. Never invent a field. If a value is not in these types, the backend does
+ *    not return it — ask for it rather than faking it.
+ * 3. Never talk to Supabase directly. Scoring, weighting and access control all
+ *    live behind this API; bypassing it produces numbers that disagree with the
+ *    rest of the product.
+ *
+ * With MOCK=true the module serves fixtures with the same shapes, so the UI can
+ * be built and demoed before the backend is running.
+ */
+
+// ─── Configuration ──────────────────────────────────────────────────────────
+
+const BASE_URL =
+  (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_API_URL) ||
+  "http://localhost:8000";
+
+/** Flip to true to run entirely on fixtures, with no backend. */
+export const MOCK = false;
+
+let authToken: string | null = null;
+
+/** Set the Supabase access token. Call after login; pass null on logout. */
+export function setAuthToken(token: string | null): void {
+  authToken = token;
+}
+
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    public code: string,
+    message: string,
+    public details: Record<string, unknown> = {},
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+
+  /** 409 means a business rule refused the request — show the message verbatim.
+   *  The backend writes these for humans ("Framework version is 'published' and
+   *  cannot be edited"), so paraphrasing them loses the actionable part. */
+  get isConflict(): boolean {
+    return this.status === 409;
+  }
+}
+
+async function request<T>(
+  path: string,
+  init: RequestInit = {},
+  params?: Record<string, unknown>,
+): Promise<T> {
+  const url = new URL(path, BASE_URL);
+  if (params) {
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== null && value !== "") {
+        url.searchParams.set(key, String(value));
+      }
+    }
+  }
+
+  const headers: Record<string, string> = { ...(init.headers as any) };
+  if (!(init.body instanceof FormData)) headers["Content-Type"] = "application/json";
+  if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
+
+  const response = await fetch(url.toString(), { ...init, headers });
+
+  if (response.status === 204) return undefined as T;
+
+  const text = await response.text();
+  const body = text ? JSON.parse(text) : null;
+
+  if (!response.ok) {
+    const err = body?.error ?? {};
+    throw new ApiError(
+      response.status,
+      err.code ?? "unknown",
+      err.message ?? response.statusText,
+      err.details ?? {},
+    );
+  }
+  return body as T;
+}
+
+// ─── Enums (mirror the Postgres types) ──────────────────────────────────────
+
+export type UserRole = "admin" | "manager" | "agent";
+export type FrameworkStatus = "draft" | "published" | "archived";
+export type ScoringType = "binary" | "scale_5" | "scale_10" | "numeric";
+export type CallStatus =
+  | "pending" | "transcribing" | "transcribed" | "evaluating" | "evaluated" | "failed";
+export type CallChannel = "phone" | "voip" | "chat" | "email";
+export type CallDirection = "inbound" | "outbound";
+export type SpeakerRole = "agent" | "customer" | "system" | "unknown";
+export type EvaluationStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type AgentRunStatus = "pending" | "running" | "completed" | "failed" | "skipped";
+export type SentimentLabel =
+  | "very_negative" | "negative" | "neutral" | "positive" | "very_positive";
+export type RiskSeverity = "low" | "medium" | "high" | "critical";
+export type Grade = "A" | "B" | "C" | "D" | "F";
+export type ResolutionStatus =
+  | "resolved" | "partially_resolved" | "unresolved" | "escalated" | "follow_up_scheduled";
+export type SentimentTrajectory =
+  | "improving" | "declining" | "stable" | "volatile" | "recovered";
+
+// ─── Quality framework ──────────────────────────────────────────────────────
+
+export interface Criterion {
+  id: string;
+  subsection_id: string;
+  code: string;
+  name: string;
+  description: string | null;
+  /** Percentage share within its sub-section. Siblings should total 100. */
+  weight: number;
+  scoring_type: ScoringType;
+  max_score: number;
+  min_score: number;
+  /** Injected verbatim into the scoring prompt. Editing this changes how calls
+   *  are scored with no code deploy — treat it as a first-class field, give it a
+   *  large textarea, and never hide it behind an "advanced" toggle. */
+  guidance: string | null;
+  examples: Array<{ score?: number; example?: string; why?: string }>;
+  /** Auto-fail. Failing this zeroes the whole call score. Mark it visibly. */
+  is_critical: boolean;
+  /** Whether the scoring agent may return "not applicable" for this criterion. */
+  allow_na: boolean;
+  display_order: number;
+  is_enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Subsection {
+  id: string;
+  section_id: string;
+  code: string;
+  name: string;
+  description: string | null;
+  weight: number;
+  display_order: number;
+  is_enabled: boolean;
+  criteria: Criterion[];
+}
+
+export interface Section {
+  id: string;
+  framework_version_id: string;
+  code: string;
+  name: string;
+  description: string | null;
+  weight: number;
+  display_order: number;
+  is_enabled: boolean;
+  subsections: Subsection[];
+}
+
+export interface FrameworkVersionSummary {
+  id: string;
+  version_no: number;
+  name: string;
+  description: string | null;
+  status: FrameworkStatus;
+  notes: string | null;
+  cloned_from: string | null;
+  published_at: string | null;
+  archived_at: string | null;
+  created_at: string;
+  section_count: number;
+  subsection_count: number;
+  criterion_count: number;
+  /** How many evaluations were scored under this version. Warn before archiving
+   *  a version with a non-zero count — those scores reference it. */
+  evaluation_count: number;
+}
+
+export interface FrameworkVersionDetail extends FrameworkVersionSummary {
+  sections: Section[];
+}
+
+export interface WeightIssue {
+  level: "section" | "subsection" | "criterion" | "structure";
+  node_path: string;
+  node_id: string | null;
+  issue: string;
+  actual_sum: number;
+}
+
+export interface ValidationResult {
+  is_valid: boolean;
+  issues: WeightIssue[];
+}
+
+export interface PublishResult {
+  published_version_id: string;
+  archived_version_id: string | null;
+  message: string;
+}
+
+export interface ReprojectResult {
+  framework_version_id: string;
+  /** Recomputed with pure arithmetic — no LLM calls, no cost. */
+  recomputed_instantly: number;
+  /** Needed the scoring agent, because this version added criteria that have
+   *  never been scored on those calls. */
+  queued_for_rescoring: number;
+  message: string;
+}
+
+// ─── Calls ──────────────────────────────────────────────────────────────────
+
+export interface CallOverview {
+  call_id: string;
+  call_code: string;
+  started_at: string;
+  duration_seconds: number | null;
+  status: CallStatus;
+  channel: CallChannel;
+  direction: CallDirection;
+  support_agent_id: string | null;
+  agent_code: string | null;
+  agent_name: string | null;
+  team_id: string | null;
+  team_name: string | null;
+  evaluation_id: string | null;
+  score_percentage: number | null;
+  grade: Grade | null;
+  auto_fail_triggered: boolean | null;
+  framework_version_id: string | null;
+  headline: string | null;
+  resolution_status: ResolutionStatus | null;
+  topics: string[] | null;
+  sentiment_label: SentimentLabel | null;
+  sentiment_score: number | null;
+  /** Closing minus opening sentiment. Positive means the agent turned the call
+   *  around — the single most useful coaching signal, so surface it. */
+  sentiment_delta: number | null;
+  sentiment_trajectory: SentimentTrajectory | null;
+  flag_count: number;
+  critical_flag_count: number;
+}
+
+export interface Paginated<T> {
+  items: T[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface TranscriptTurn {
+  id: string;
+  turn_index: number;
+  speaker: SpeakerRole;
+  speaker_label: string;
+  text: string;
+  start_ms: number | null;
+  end_ms: number | null;
+  /** Offsets into Transcript.full_text. Highlight with a literal slice —
+   *  never search for the quoted text, which may be a paraphrase. */
+  char_start: number;
+  char_end: number;
+}
+
+export interface Transcript {
+  id: string;
+  full_text: string;
+  word_count: number;
+  turn_count: number;
+  language: string;
+  transcription_provider: string | null;
+  transcription_model: string | null;
+  transcription_confidence: number | null;
+}
+
+export interface ScoreCitation {
+  id: string;
+  turn_index: number | null;
+  quoted_text: string;
+  char_start: number | null;
+  char_end: number | null;
+  /** supporting = evidence of good practice (green);
+   *  detracting = evidence of a failure (red). */
+  polarity: "supporting" | "detracting" | "neutral";
+  relevance: number | null;
+}
+
+export interface CriterionScore {
+  id: string;
+  criterion_code: string;
+  criterion_name: string;
+  subsection_code: string;
+  section_code: string;
+  scoring_type: ScoringType;
+  weight_snapshot: number;
+  is_critical_snapshot: boolean;
+  raw_score: number | null;
+  max_score: number;
+  /** 0..1. Use this for bars and colours; raw_score for the displayed number. */
+  normalized: number | null;
+  confidence: number | null;
+  reasoning: string | null;
+  /** false means not applicable: show "N/A", never 0. Scoring it zero would
+   *  unfairly penalise the agent, and the backend excludes it from the total. */
+  is_applicable: boolean;
+  na_reason: string | null;
+  citations: ScoreCitation[];
+}
+
+export interface SectionScore {
+  section_code: string;
+  section_name: string;
+  weight_snapshot: number;
+  normalized: number | null;
+  subsections_total: number;
+  subsections_scored: number;
+}
+
+export interface SubsectionScore {
+  subsection_code: string;
+  subsection_name: string;
+  section_code: string;
+  weight_snapshot: number;
+  normalized: number | null;
+  criteria_total: number;
+  criteria_scored: number;
+}
+
+export interface CallSummary {
+  headline: string | null;
+  summary: string;
+  customer_intent: string | null;
+  resolution_status: ResolutionStatus | null;
+  outcome: string | null;
+  key_issues: string[];
+  topics: string[];
+  next_actions: Array<{ action: string; owner?: string; due?: string }>;
+}
+
+export interface SentimentPoint {
+  turn_index: number;
+  speaker: SpeakerRole;
+  score: number;
+  label: SentimentLabel;
+  emotions: Record<string, number>;
+}
+
+export interface RiskFlag {
+  id: string;
+  flag_type: string;
+  severity: RiskSeverity;
+  title: string;
+  description: string;
+  confidence: number | null;
+  turn_index: number | null;
+  quoted_text: string | null;
+  char_start: number | null;
+  char_end: number | null;
+  is_acknowledged: boolean;
+  is_false_positive: boolean;
+  reviewer_notes: string | null;
+}
+
+export interface CallStatistics {
+  agent_turn_count: number;
+  customer_turn_count: number;
+  agent_word_count: number;
+  customer_word_count: number;
+  /** Agent share of words spoken. Above ~0.75 is a listening red flag. */
+  agent_talk_ratio: number | null;
+  longest_agent_turn_words: number | null;
+  interruption_count: number;
+  question_count_agent: number;
+  filler_word_count: number;
+  detected_language: string | null;
+}
+
+export interface AgentRun {
+  agent_name: string;
+  step_order: number;
+  status: AgentRunStatus;
+  model: string | null;
+  prompt_version: string | null;
+  input_tokens: number;
+  output_tokens: number;
+  latency_ms: number | null;
+  /** Greater than 1 means the provider retried — the model was rate-limited or
+   *  timed out. Worth surfacing in the pipeline trace. */
+  attempt_count: number;
+  error_message: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface EvaluationHistoryItem {
+  id: string;
+  framework_version_id: string;
+  status: EvaluationStatus;
+  score_percentage: number | null;
+  grade: Grade | null;
+  auto_fail_triggered: boolean;
+  is_current: boolean;
+  /** initial | framework_change | manual_rerun | model_upgrade */
+  trigger_reason: string;
+  model_used: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+/** Everything the drill-down page needs, in one response. */
+export interface CallDetail {
+  call: CallOverview;
+  transcript: Transcript | null;
+  turns: TranscriptTurn[];
+  evaluation_id: string | null;
+  criterion_scores: CriterionScore[];
+  section_scores: SectionScore[];
+  subsection_scores: SubsectionScore[];
+  summary: CallSummary | null;
+  sentiment_timeline: SentimentPoint[];
+  risk_flags: RiskFlag[];
+  statistics: CallStatistics | null;
+  agent_runs: AgentRun[];
+  evaluation_history: EvaluationHistoryItem[];
+}
+
+export interface CallFilters {
+  limit?: number;
+  offset?: number;
+  team_id?: string;
+  support_agent_id?: string;
+  status?: CallStatus;
+  grade?: Grade;
+  date_from?: string;
+  date_to?: string;
+  min_score?: number;
+  max_score?: number;
+  has_flags?: boolean;
+  auto_failed?: boolean;
+  topic?: string;
+  /** Matches call code, agent name, and transcript full text. */
+  search?: string;
+  sort_by?: "started_at" | "score" | "duration" | "agent" | "sentiment";
+  sort_dir?: "asc" | "desc";
+}
+
+// ─── Analytics ──────────────────────────────────────────────────────────────
+
+export interface AnalyticsFilters {
+  date_from?: string;
+  date_to?: string;
+  team_id?: string;
+  support_agent_id?: string;
+}
+
+export interface OverviewMetrics {
+  total_calls: number;
+  evaluated_calls: number;
+  avg_score: number | null;
+  avg_sentiment: number | null;
+  avg_sentiment_delta: number | null;
+  auto_fails: number;
+  critical_flags: number;
+  total_flags: number;
+  avg_duration_seconds: number | null;
+  active_agents: number;
+}
+
+export interface AnalyticsOverview {
+  period: { from: string; to: string };
+  current: OverviewMetrics;
+  previous: OverviewMetrics;
+  /** Percentage change against the preceding window of equal length.
+   *  null when there is no comparable prior data — render "—", not "0%". */
+  change_pct: {
+    avg_score: number | null;
+    total_calls: number | null;
+    auto_fails: number | null;
+    avg_sentiment: number | null;
+    critical_flags: number | null;
+  };
+  auto_fail_rate: number;
+  evaluation_coverage_pct: number;
+}
+
+export interface TrendPoint {
+  bucket: string;
+  calls: number;
+  evaluated: number;
+  avg_score: number | null;
+  avg_sentiment: number | null;
+  auto_fails: number;
+  critical_flags: number;
+}
+
+export interface SectionPerformance {
+  section_code: string;
+  section_name: string;
+  weight: number;
+  avg_score: number | null;
+  sample_size: number;
+}
+
+export interface CriterionPerformance {
+  section_code: string;
+  subsection_code: string;
+  criterion_code: string;
+  criterion_name: string;
+  is_critical: boolean;
+  scored: number;
+  not_applicable: number;
+  avg_score: number | null;
+  avg_confidence: number | null;
+  /** Share of APPLICABLE scores below half marks. N/A is excluded from both
+   *  numerator and denominator. */
+  fail_rate_pct: number | null;
+}
+
+export interface AgentScorecard {
+  support_agent_id: string;
+  agent_code: string;
+  agent_name: string;
+  team_id: string | null;
+  team_name: string | null;
+  calls: number;
+  evaluated: number;
+  avg_score: number | null;
+  min_score: number | null;
+  max_score: number | null;
+  /** Consistency. A steady 78 and an erratic 60-95 average the same but are
+   *  different coaching problems, so show this next to the average. */
+  score_stddev: number | null;
+  auto_fails: number;
+  avg_sentiment_delta: number | null;
+  critical_flags: number;
+  avg_duration_seconds: number | null;
+  last_call_at: string | null;
+}
+
+export interface ScoreDistribution {
+  /** All ten bands are always present, including empty ones, so the x-axis is
+   *  stable. Do not filter them out. */
+  bands: Array<{ band: number; label: string; calls: number }>;
+  grades: Partial<Record<Grade, number>>;
+}
+
+export interface FlagSummary {
+  by_type: Array<{ flag_type: string; severity: RiskSeverity; count: number }>;
+  by_severity: Partial<Record<RiskSeverity, number>>;
+  total: number;
+  recent_open: Array<
+    RiskFlag & { call_id: string; call_code: string; agent_name: string | null;
+                 team_name: string | null; created_at: string }
+  >;
+}
+
+export interface TopicBreakdown {
+  topic: string;
+  calls: number;
+  avg_score: number | null;
+  avg_sentiment: number | null;
+}
+
+// ─── Ingestion, evaluations, meta ───────────────────────────────────────────
+
+export interface IngestResult {
+  call_id: string;
+  call_code: string;
+  transcript_id: string;
+  turn_count: number;
+  word_count: number;
+  created: boolean;
+  agent_resolved: boolean;
+}
+
+export interface BatchResult {
+  batch_id: string;
+  filename: string;
+  total_rows: number;
+  succeeded: number;
+  failed: number;
+  created: number;
+  updated: number;
+  /** Per-row failures. A partial import is normal and expected — show these
+   *  rather than treating the whole upload as failed. */
+  errors: Array<{ row: number; call_code: string; error: string }>;
+}
+
+export interface IngestionBatch {
+  id: string;
+  filename: string | null;
+  total_rows: number;
+  succeeded: number;
+  failed: number;
+  status: string;
+  error_log: Array<{ row: number; call_code: string; error: string }>;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface EvaluationResult {
+  evaluation_id: string;
+  call_id: string;
+  framework_version_id: string;
+  agents_completed: string[];
+  agents_failed: string[];
+  score_percentage: number | null;
+  grade: Grade | null;
+  auto_fail_triggered: boolean;
+  auto_fail_reason: string | null;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number;
+  model_used: string | null;
+  duration_ms: number | null;
+}
+
+export interface QueuedEvaluation {
+  job_id: string;
+  evaluation_id: string;
+  status: string;
+}
+
+export interface PipelineGraph {
+  /** Mermaid source, generated from the graph that actually runs. */
+  mermaid: string;
+  agents: Array<{ name: string; step: number; uses_llm: boolean; output: string }>;
+  provider: string;
+  model: string;
+}
+
+export interface JobQueue {
+  jobs: Array<{
+    id: string; job_type: string; status: string; priority: number;
+    attempts: number; max_attempts: number; error_message: string | null;
+    created_at: string; started_at: string | null; completed_at: string | null;
+    call_code: string | null;
+  }>;
+  counts: Record<string, number>;
+}
+
+export interface Team {
+  id: string;
+  code: string;
+  name: string;
+  description: string | null;
+  is_active: boolean;
+  agent_count: number;
+  call_count: number;
+}
+
+export interface Health {
+  status: "ok" | "degraded";
+  database: string;
+  auth_dev_bypass: boolean;
+  mock_llm: boolean;
+  calls?: number;
+  evaluations?: number;
+  active_criteria?: number;
+  framework_version?: number;
+}
+
+// ─── API surface ────────────────────────────────────────────────────────────
+
+export const api = {
+  health: () => request<Health>("/health"),
+
+  teams: {
+    list: () => request<Team[]>("/api/teams"),
+  },
+
+  calls: {
+    list: (filters: CallFilters = {}) =>
+      request<Paginated<CallOverview>>("/api/calls", {}, filters as any),
+    get: (callId: string) => request<CallDetail>(`/api/calls/${callId}`),
+    transcript: (callId: string) =>
+      request<Transcript & { turns: TranscriptTurn[] }>(`/api/calls/${callId}/transcript`),
+  },
+
+  analytics: {
+    overview: (f: AnalyticsFilters = {}) =>
+      request<AnalyticsOverview>("/api/analytics/overview", {}, f as any),
+    trend: (f: AnalyticsFilters & { granularity?: "day" | "week" | "month" } = {}) =>
+      request<TrendPoint[]>("/api/analytics/trend", {}, f as any),
+    sections: (f: AnalyticsFilters = {}) =>
+      request<SectionPerformance[]>("/api/analytics/sections", {}, f as any),
+    criteria: (f: AnalyticsFilters & { limit?: number; worst_first?: boolean } = {}) =>
+      request<CriterionPerformance[]>("/api/analytics/criteria", {}, f as any),
+    agents: (f: AnalyticsFilters & { limit?: number } = {}) =>
+      request<AgentScorecard[]>("/api/analytics/agents", {}, f as any),
+    distribution: (f: AnalyticsFilters = {}) =>
+      request<ScoreDistribution>("/api/analytics/distribution", {}, f as any),
+    flags: (f: AnalyticsFilters & { limit?: number } = {}) =>
+      request<FlagSummary>("/api/analytics/flags", {}, f as any),
+    topics: (f: AnalyticsFilters = {}) =>
+      request<TopicBreakdown[]>("/api/analytics/topics", {}, f as any),
+  },
+
+  framework: {
+    versions: () => request<FrameworkVersionSummary[]>("/api/framework/versions"),
+    active: () => request<FrameworkVersionDetail>("/api/framework/active"),
+    get: (versionId: string) =>
+      request<FrameworkVersionDetail>(`/api/framework/versions/${versionId}`),
+
+    /** Returns an editable draft, cloning the published version if none exists.
+     *  Call this when the user clicks "Edit framework" — never attempt to PATCH
+     *  a published version, which returns 409 by design. */
+    draft: () => request<FrameworkVersionDetail>("/api/framework/draft", { method: "POST" }),
+
+    clone: (versionId: string, name?: string) =>
+      request<FrameworkVersionDetail>(
+        `/api/framework/versions/${versionId}/clone`,
+        { method: "POST", body: JSON.stringify({ name: name ?? null }) },
+      ),
+
+    /** Poll while the user edits so imbalance is visible immediately, rather
+     *  than only being discovered at publish time. */
+    validate: (versionId: string) =>
+      request<ValidationResult>(`/api/framework/versions/${versionId}/validate`),
+
+    /** Auto-balance: rescales enabled siblings to total 100, keeping ratios. */
+    normalize: (versionId: string) =>
+      request<FrameworkVersionDetail>(
+        `/api/framework/versions/${versionId}/normalize`, { method: "POST" },
+      ),
+
+    /** Fails with 409 and the specific imbalance if weights do not total 100. */
+    publish: (versionId: string) =>
+      request<PublishResult>(
+        `/api/framework/versions/${versionId}/publish`, { method: "POST" },
+      ),
+
+    /** Apply this version across historical evaluations. */
+    apply: (versionId: string, onlyCurrent = true) =>
+      request<ReprojectResult>(
+        `/api/framework/versions/${versionId}/apply`,
+        { method: "POST" }, { only_current: onlyCurrent },
+      ),
+
+    createSection: (body: Partial<Section> & { framework_version_id: string; code: string; name: string }) =>
+      request<Section>("/api/framework/sections", { method: "POST", body: JSON.stringify(body) }),
+    updateSection: (id: string, body: Partial<Section>) =>
+      request<Section>(`/api/framework/sections/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+    deleteSection: (id: string) =>
+      request<void>(`/api/framework/sections/${id}`, { method: "DELETE" }),
+
+    createSubsection: (body: Partial<Subsection> & { section_id: string; code: string; name: string }) =>
+      request<Subsection>("/api/framework/subsections", { method: "POST", body: JSON.stringify(body) }),
+    updateSubsection: (id: string, body: Partial<Subsection>) =>
+      request<Subsection>(`/api/framework/subsections/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+    deleteSubsection: (id: string) =>
+      request<void>(`/api/framework/subsections/${id}`, { method: "DELETE" }),
+
+    createCriterion: (body: Partial<Criterion> & { subsection_id: string; code: string; name: string }) =>
+      request<Criterion>("/api/framework/criteria", { method: "POST", body: JSON.stringify(body) }),
+    updateCriterion: (id: string, body: Partial<Criterion>) =>
+      request<Criterion>(`/api/framework/criteria/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+    deleteCriterion: (id: string) =>
+      request<void>(`/api/framework/criteria/${id}`, { method: "DELETE" }),
+
+    reorder: (level: "sections" | "subsections" | "criteria",
+              items: Array<{ id: string; display_order: number }>) =>
+      request<{ message: string }>(`/api/framework/${level}/reorder`,
+        { method: "POST", body: JSON.stringify({ items }) }),
+  },
+
+  evaluations: {
+    graph: () => request<PipelineGraph>("/api/evaluations/pipeline/graph"),
+    get: (evaluationId: string) => request<any>(`/api/evaluations/${evaluationId}`),
+
+    /** run_inline: true blocks until finished — fine for one call, never for a
+     *  batch. Queued runs are picked up by the background worker. */
+    run: (callId: string, opts: { run_inline?: boolean; trigger_reason?: string } = {}) =>
+      request<EvaluationResult | QueuedEvaluation>(
+        `/api/evaluations/calls/${callId}`,
+        { method: "POST", body: JSON.stringify({ run_inline: false, ...opts }) },
+      ),
+
+    bulk: (body: { call_ids?: string[]; limit?: number; trigger_reason?: string } = {}) =>
+      request<{ queued: number; jobs: QueuedEvaluation[] }>(
+        "/api/evaluations/bulk", { method: "POST", body: JSON.stringify(body) },
+      ),
+
+    queue: (status?: string) =>
+      request<JobQueue>("/api/evaluations/jobs/queue", {}, { status }),
+  },
+
+  ingestion: {
+    single: (body: {
+      call_code: string;
+      transcript: string | Array<{ speaker: string; text: string; start_ms?: number }>;
+      agent_code?: string; customer_ref?: string; started_at?: string;
+      duration_seconds?: number; direction?: CallDirection; channel?: CallChannel;
+      language?: string; metadata?: Record<string, unknown>;
+    }) => request<IngestResult>("/api/ingestion/calls",
+      { method: "POST", body: JSON.stringify(body) }),
+
+    batch: (file: File) => {
+      const form = new FormData();
+      form.append("file", file);
+      return request<BatchResult>("/api/ingestion/batch", { method: "POST", body: form });
+    },
+
+    batches: () => request<IngestionBatch[]>("/api/ingestion/batches"),
+    batch_detail: (batchId: string) =>
+      request<IngestionBatch>(`/api/ingestion/batches/${batchId}`),
+  },
+};
+
+// ─── Display helpers ────────────────────────────────────────────────────────
+// Kept here so score formatting and colour banding cannot drift between pages.
+
+export const GRADE_BANDS: Record<Grade, { min: number; label: string }> = {
+  A: { min: 90, label: "Excellent" },
+  B: { min: 80, label: "Good" },
+  C: { min: 70, label: "Satisfactory" },
+  D: { min: 60, label: "Needs improvement" },
+  F: { min: 0, label: "Unsatisfactory" },
+};
+
+export function gradeFor(score: number | null): Grade | null {
+  if (score === null || score === undefined) return null;
+  if (score >= 90) return "A";
+  if (score >= 80) return "B";
+  if (score >= 70) return "C";
+  if (score >= 60) return "D";
+  return "F";
+}
+
+/** Renders "N/A" for an inapplicable criterion. Never render it as 0 — the
+ *  backend excludes it from the total, and showing 0 misrepresents the agent. */
+export function formatScore(score: CriterionScore): string {
+  if (!score.is_applicable) return "N/A";
+  if (score.raw_score === null) return "—";
+  if (score.scoring_type === "binary") return score.raw_score >= 1 ? "Met" : "Not met";
+  return `${score.raw_score} / ${score.max_score}`;
+}
+
+export function formatDuration(seconds: number | null): string {
+  if (seconds === null || seconds === undefined) return "—";
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}m ${String(s).padStart(2, "0")}s`;
+}
+
+/** Splits full_text into segments so a cited range can be wrapped and
+ *  highlighted. Uses stored offsets — never a text search. */
+export function highlightSegments(
+  fullText: string,
+  ranges: Array<{ char_start: number; char_end: number; polarity?: string }>,
+): Array<{ text: string; highlighted: boolean; polarity?: string }> {
+  const sorted = [...ranges]
+    .filter((r) => r.char_start != null && r.char_end != null)
+    .sort((a, b) => a.char_start - b.char_start);
+
+  const out: Array<{ text: string; highlighted: boolean; polarity?: string }> = [];
+  let cursor = 0;
+  for (const range of sorted) {
+    if (range.char_start < cursor) continue; // skip overlaps
+    if (range.char_start > cursor) {
+      out.push({ text: fullText.slice(cursor, range.char_start), highlighted: false });
+    }
+    out.push({
+      text: fullText.slice(range.char_start, range.char_end),
+      highlighted: true,
+      polarity: range.polarity,
+    });
+    cursor = range.char_end;
+  }
+  if (cursor < fullText.length) {
+    out.push({ text: fullText.slice(cursor), highlighted: false });
+  }
+  return out;
+}
+```
+
+STEP 2 - Now build the following, using that file as the only data source:
+
+Build the foundation and the dashboard for CALL-ANALYZER.
+
+BUILD THIS NOW. Do not ask clarifying questions, do not ask me to re-supply the
+specification, and do not pause for confirmation — everything you need is in
+this message. If a detail is genuinely unspecified, choose a sensible default,
+note it in one line at the end, and keep building.
+
+## STACK
+React 18 + TypeScript + Vite, Tailwind CSS, shadcn/ui, React Router,
+TanStack Query (react-query), Recharts, lucide-react, date-fns.
+
+## ═══ DESIGN SYSTEM ═══
+
+Set these exact CSS variables in src/index.css. Do not substitute your own
+palette. This is a deliberate, tested colour system.
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 224 20% 12%;
+    --card: 0 0% 100%;
+    --card-foreground: 224 20% 12%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 224 20% 12%;
+    --primary: 243 75% 59%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 14% 96%;
+    --secondary-foreground: 224 20% 20%;
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 9% 46%;
+    --accent: 220 14% 96%;
+    --accent-foreground: 224 20% 20%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 243 75% 59%;
+    --radius: 0.625rem;
+
+    /* Semantic data colours — meaning, not decoration.
+       Three variants each, because one value cannot serve all three jobs:
+         -text : darkened to pass WCAG AA (4.5:1) as TEXT on the page
+         (base): the fill for bars, chart series and badge backgrounds
+         -soft : a tint for highlighted transcript turns and callouts
+       Emerald and amber at their natural brightness measure 2.6:1 and 2.1:1 on
+       white — they FAIL as text. Score numbers are text, so they use -text. */
+    --success: 160 84% 39%;
+    --success-text: 160 84% 28%;
+    --success-soft: 152 76% 94%;
+    --warning: 38 92% 50%;
+    --warning-text: 32 95% 36%;
+    --warning-soft: 48 100% 94%;
+    --danger: 0 72% 51%;
+    --danger-text: 0 72% 45%;
+    --danger-soft: 0 86% 96%;
+    --neutral-data: 220 9% 46%;
+
+    /* Categorical chart series */
+    --chart-1: 243 75% 59%;
+    --chart-2: 173 80% 36%;
+    --chart-3: 38 92% 50%;
+    --chart-4: 340 82% 58%;
+    --chart-5: 258 90% 66%;
+    --chart-6: 199 89% 48%;
+  }
+
+  .dark {
+    --background: 224 24% 7%;
+    --foreground: 210 20% 96%;
+    --card: 224 20% 10%;
+    --card-foreground: 210 20% 96%;
+    --popover: 224 20% 10%;
+    --popover-foreground: 210 20% 96%;
+    --primary: 243 80% 68%;
+    --primary-foreground: 224 24% 7%;
+    --secondary: 223 18% 16%;
+    --secondary-foreground: 210 20% 96%;
+    --muted: 223 18% 16%;
+    --muted-foreground: 218 12% 65%;
+    --accent: 223 18% 18%;
+    --accent-foreground: 210 20% 96%;
+    --destructive: 0 84% 62%;
+    --destructive-foreground: 210 20% 98%;
+    --border: 223 18% 19%;
+    --input: 223 18% 19%;
+    --ring: 243 80% 68%;
+
+    /* On the dark background these already measure 9.9:1, 11.3:1 and 5.3:1,
+       so text and fill can share a value. */
+    --success: 158 64% 52%;
+    --success-text: 158 64% 52%;
+    --success-soft: 161 84% 12%;
+    --warning: 43 96% 56%;
+    --warning-text: 43 96% 56%;
+    --warning-soft: 35 92% 12%;
+    --danger: 0 84% 62%;
+    --danger-text: 0 84% 62%;
+    --danger-soft: 0 63% 14%;
+    --neutral-data: 218 12% 65%;
+
+    --chart-1: 243 80% 68%;
+    --chart-2: 172 66% 50%;
+    --chart-3: 43 96% 56%;
+    --chart-4: 340 82% 66%;
+    --chart-5: 258 90% 74%;
+    --chart-6: 199 89% 60%;
+  }
+}
+
+Extend tailwind.config.ts so all of these are usable as Tailwind classes:
+bg-success, text-success-text, bg-success-soft, and the same for warning and
+danger, plus chart-1 through chart-6.
+
+**Use the right variant.** Any COLOURED NUMBER OR LABEL uses the `-text`
+variant. Bars, chart series and badge fills use the base. Highlight tints use
+`-soft`. This is not stylistic fussiness: at their natural brightness emerald
+measures 2.6:1 and amber 2.1:1 against white, both well below the 4.5:1 minimum,
+so a score rendered in the base colour is genuinely hard to read.
+
+Solid badges: `bg-danger` takes white text (4.8:1, passes). `bg-success` and
+`bg-warning` do NOT — give those foreground-coloured text, or use the soft
+background with `-text` foreground instead.
+
+### Typography
+- UI font: **Inter** (via Google Fonts), weights 400/500/600/700.
+- Numeric font feature: apply `font-variant-numeric: tabular-nums` globally to
+  every number in a table or KPI, so columns of figures align.
+- Monospace: **JetBrains Mono** for call codes, criterion codes, and IDs only.
+- Base size 14px. Page titles 20px/600. Card titles 14px/600. KPI values
+  30px/700. Table body 13px.
+
+### Spacing and shape
+- Card radius 10px (--radius). Buttons and inputs 8px. Badges fully rounded.
+- Card padding 20px. Grid gap 16px. Page padding 24px.
+- Borders: 1px solid hsl(var(--border)). Shadows ONLY on popovers, dropdowns and
+  dialogs — cards use borders, not shadows.
+
+### THE SCORE COLOUR RULE (used identically everywhere)
+score >= 80  -> success  (text: text-success-text, bar: bg-success)
+score 60-79  -> warning  (text: text-warning-text, bar: bg-warning)
+score <  60  -> danger   (text: text-danger-text,  bar: bg-danger)
+not applicable -> muted-foreground, never red, never zero
+auto-fail -> solid danger badge, always with the reason text
+
+Never use colour as the only signal. Always pair it with a number, label or
+icon, for accessibility and for greyscale printing.
+
+## ═══ APP SHELL ═══
+
+Left sidebar, 240px, collapsible to 64px icons, state persisted to
+localStorage:
+- Top: a small waveform/audio-lines icon in primary, wordmark "CALL-ANALYZER"
+  in 15px/700 with tight letter-spacing.
+- Nav items with lucide icons: LayoutDashboard "Dashboard" (/),
+  PhoneCall "Calls" (/calls), SlidersHorizontal "Framework" (/admin),
+  MessageSquareText "Assistant" (/chat).
+- Active item: primary-tinted background, primary left border 2px, medium weight.
+- Bottom: theme toggle (Sun/Moon, persisted to localStorage), then a user chip
+  with initials avatar, name, and a small role badge.
+
+Header bar on every page: page title on the left, the global filter bar on the
+right, and a muted "Updated {relative time}" caption.
+
+### Global filter bar — one shared component
+State lives in the URL query string so a filtered view can be copied and shared.
+- Date range: presets "Last 7 days", "Last 30 days", "Last 6 weeks" (DEFAULT),
+  "All time", plus a custom range picker.
+- Team select — from api.teams.list().
+- Agent select — from api.analytics.agents(), filtered to the chosen team.
+- "Reset" button, visible only when a filter is active.
+- Active filters render as removable chips beneath the bar.
+
+Every page reads these and passes them straight into its API calls.
+
+Routes /admin and /chat: render a centred card, "Coming in the next phase".
+Build the nav entries, not the pages.
+
+## ═══ PAGE: DASHBOARD (route /) ═══
+
+Data: api.analytics.* — see api.ts for exact types.
+
+### Row 1 — six KPI cards (grid: 6 cols desktop, 3 tablet, 2 mobile)
+Source: api.analytics.overview(filters) -> AnalyticsOverview
+
+Each card: muted 12px uppercase label with letter-spacing, then a 30px/700
+value, then a sub-line. Trend arrow chip in the top-right.
+
+| Label | Value | Sub-line |
+|---|---|---|
+| AVERAGE SCORE | current.avg_score, "54.2%" | trend from change_pct.avg_score |
+| CALLS EVALUATED | current.evaluated_calls | "{evaluation_coverage_pct}% of {total_calls}" |
+| AUTO-FAIL RATE | auto_fail_rate, "14.6%" | "{current.auto_fails} calls" — card border turns danger above 10% |
+| CRITICAL FLAGS | current.critical_flags | "{current.total_flags} total flags" |
+| SENTIMENT RECOVERY | current.avg_sentiment_delta, "+0.43" | "closing minus opening" |
+| ACTIVE AGENTS | current.active_agents | "{formatDuration(avg_duration_seconds)} avg call" |
+
+Trend arrows: green up / red down for score and sentiment. INVERT for auto-fails
+and flags, where fewer is better. When change_pct.X is null, render an em-dash
+"—" and no arrow. Null means there is no comparable prior period; rendering
+"0%" would be a false statement.
+
+### Row 2 — score trend (full width card)
+Source: api.analytics.trend({...filters, granularity})
+
+Recharts ComposedChart:
+- Bars: `calls` on the right Y axis, fill hsl(var(--muted-foreground)) at 15%
+  opacity, no stroke.
+- Line: `avg_score` on the left Y axis fixed 0–100, stroke chart-1, 2.5px,
+  dot only on hover, activeDot r=5.
+- Optional dashed line: `avg_sentiment` rescaled to 0–100, chart-2, toggled by a
+  legend checkbox, off by default.
+- Header: title "Quality trend" plus a segmented Day / Week / Month toggle,
+  defaulting to Week.
+- CartesianGrid: horizontal lines only, border colour, strokeDasharray 3 3.
+- Custom tooltip card showing every metric for that bucket including auto_fails.
+- Empty state: "No calls in this period."
+
+### Row 3 — two cards, 50/50
+**Left, "Where we're weakest"** — api.analytics.sections()
+Horizontal bars. The API already returns weakest-first; PRESERVE that order, it
+is the entire point of the chart. Each row: section name, a bar coloured by the
+score rule, the percentage right-aligned in 15px/600, and the section weight as
+a small muted chip ("25% weight"). Clicking a row navigates to
+/calls?sort_by=score&sort_dir=asc.
+
+**Right, "Score distribution"** — api.analytics.distribution()
+Bar chart over `bands`. RENDER ALL TEN BANDS INCLUDING EMPTY ONES — the API
+returns them deliberately so the x-axis stays stable; filtering them out
+misrepresents the shape. Colour each bar by the score rule. Beneath, a compact
+A/B/C/D/F tally row with counts.
+
+### Row 4 — two cards, 60/40
+**Left, "Agent leaderboard"** — api.analytics.agents()
+Sortable table: Agent (name, with agent_code muted beneath), Team chip, Calls,
+Avg score (coloured, 15px/600), Consistency, Auto-fails, Sentiment Δ.
+
+For Consistency render a small horizontal range bar spanning min_score to
+max_score with a marker at avg_score, and the σ value (score_stddev) beside it.
+This distinction matters: a steady 78 and an erratic 60–95 average the same but
+are completely different coaching problems. Tooltip: "Lower σ means more
+consistent." Row click → /calls?support_agent_id={id}.
+
+**Right, "Coaching priorities"** — api.analytics.criteria({ limit: 8 })
+Already worst-first. Per row: criterion_name in 13px/600; section_code /
+subsection_code as a muted breadcrumb above; a thin avg_score bar; fail_rate_pct
+as bold danger text on the right; a solid danger "CRITICAL" badge when
+is_critical. Where not_applicable > 0, a muted footnote "N/A on {n} calls".
+
+### Row 5 — two cards, 50/50
+**Left, "Open risk flags"** — api.analytics.flags({ limit: 8 })
+A row of severity chips from by_severity (critical=danger solid, high=danger
+outline, medium=warning, low=muted). Then recent_open as a list: severity badge,
+title in 13px/600, then "{call_code} · {agent_name} · {relative time}" muted.
+Row click opens that call. Empty state: "No open flags."
+
+**Right, "Topics"** — api.analytics.topics()
+Table: topic (formatted from snake_case to Title Case), calls, avg score
+(coloured), avg sentiment as a small −1..+1 diverging bar. Click →
+/calls?topic={topic}.
+
+## ═══ BEHAVIOUR ═══
+- TanStack Query for every call. staleTime 30000. Query keys include the filters.
+- Loading: skeletons shaped like the real content. Never a full-page spinner.
+- Errors: catch ApiError from api.ts. If err.isConflict (409), show err.message
+  VERBATIM in a destructive Alert — the backend writes those sentences for
+  humans and paraphrasing removes the actionable part. Otherwise a generic
+  message with a Retry button.
+- Empty states everywhere, each with a specific sentence saying what is missing.
+- Responsive down to 375px.
+- Keyboard accessible: visible focus rings, Escape closes overlays.
+- Formatting: scores to one decimal place with "%", token counts with thousands
+  separators, dates as "2 Sep, 14:22", relative times as "3 days ago".
+
+## ═══ MOCK DATA — use these real values ═══
+84 calls, 9 agents, 3 teams: "Billing & Payments", "Technical Support",
+"Retention & Loyalty".
+Agents: Priya Nair, Rahul Menon, Sneha Kulkarni, Arjun Deshmukh, Fatima Sheikh,
+Vikram Iyer, Ananya Bose, Karan Malhotra, Meera Raghavan.
+Call codes look like NW-20260830-0077.
+Overall average 54.2%. Grades: C 13, D 38, F 33. 12 auto-failed calls, all with
+reason "Critical criterion failed: Verifies customer identity".
+Sections and weights: OPENING 15%, COMMUNICATION 25%, RESOLUTION 30%,
+COMPLIANCE 20%, CLOSING 10%.
+Section averages: COMMUNICATION 42.6, RESOLUTION 48.7, OPENING 70.2,
+CLOSING 72.4, COMPLIANCE 87.8.
+Weakest criteria: PLAIN_LANGUAGE 1.2%, JARGON_AVOIDANCE 1.2%,
+SOLUTION_ACCURACY 14.3%, ROOT_CAUSE_ID 18.5%.
+Topics: retention 31 calls, billing 31, technical 21.
+41 risk flags: 3 critical, 29 high, 9 medium.
+Weekly trend: 5, 17, 17, 12, 13, 15, 5 calls with averages 48.0, 54.5, 55.5,
+57.5, 50.8, 52.8, 60.9.
+
+## DELIVERABLE
+A working Vite + React + TypeScript project with the design system applied, the
+app shell, and the dashboard. Clean structure under src/components/ (ui/,
+charts/, layout/) and src/pages/. api.ts untouched apart from MOCK fixtures.
