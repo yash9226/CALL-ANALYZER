@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Creates deepkakadiya7/CALL-ANALYZER and pushes. Run AFTER authenticating:
-#   gh auth login          (choose GitHub.com > HTTPS > browser, sign in as deepkakadiya7)
+#   gh auth login          (choose GitHub.com > HTTPS > browser, sign in as yash9226)
 # then:
 #   bash scripts/push_to_github.sh
 set -euo pipefail
 
 REPO="CALL-ANALYZER"
-OWNER="deepkakadiya7"
+OWNER="yash9226"
 
 ACTIVE=$(gh api user --jq .login)
 if [ "$ACTIVE" != "$OWNER" ]; then
