@@ -438,14 +438,207 @@ Notable assertions:
 
 ---
 
+## `backend/app/llm/` — provider abstraction ✅ *(Phase 3)*
+
+Every agent talks to this, never to Gemini directly.
+
+### `base.py`
+`LLMResult` (text, parsed, model, tokens, latency, attempts, fallback_chain),
+`LLMProvider` protocol, `LLMError`, and `PRICING` / `estimate_cost()`.
+
+### `gemini.py` — `GeminiProvider`
+| Method | Purpose |
+|---|---|
+| `_post()` | **The reliability core.** Two nested loops: a model ladder, and exponential backoff within each model |
+| `generate_json()` | Constrained decoding via Gemini's native `responseSchema` |
+| `embed()` | 768-d embeddings (truncated from the native 3072) |
+| `transcribe()` | Audio → diarised transcript, via the API |
+
+> **Why the retry machinery is not defensive over-engineering.** Google's free
+> tier returned `503 "experiencing high demand"` repeatedly during this build,
+> and sometimes simply hung. A live run observed here needed **3 attempts across
+> a 503 and a ReadTimeout** before succeeding. Without the ladder, one spike
+> would fail an entire 84-call run.
+
+> Retryable: 429, 500, 502, 503, 504, timeouts. **Not** retryable: 400 and 403 —
+> a malformed request or bad key fails identically forever, so retrying only
+> burns quota.
+
+> **Bug caught by a test:** on fallback the provider reported the model that
+> *failed* rather than the one that succeeded, so `agent_runs.model` would have
+> been wrong exactly when it mattered most. `_post()` now returns the successful
+> candidate explicitly.
+
+### `mock.py` — `MockProvider` ⚠️ **not a local model**
+No weights, no downloads, nothing on the CPU or GPU. A keyword rule engine
+returning schema-conformant fixtures.
+
+| Object | Purpose |
+|---|---|
+| `Rule` | `positive` / `negative` phrases, `na_unless`, `scope`, `needed_for_full` |
+| `RULES` | One rule per criterion code, all 31 |
+| `evaluate_rule()` | Scores a criterion and produces real citations into real turns |
+| `_score` / `_summary` / `_sentiment` / `_risk` | Per-agent handlers |
+| `embed()` | Deterministic hash-based vectors — stable, but carrying no meaning |
+
+Three reasons it exists:
+1. **A demo cannot depend on a free-tier API being healthy.**
+2. Tests need to be fast, free and deterministic.
+3. **It is a rule-based BASELINE.** Same transcripts, same rubric — so the report
+   can compare keyword rules against the LLM on ground-truth labels, which is a
+   far stronger evaluation than reporting LLM numbers alone.
+
+> `scope` restricts each rule to the relevant part of the call, so a "thank you"
+> in the closing cannot rescue a greeting criterion. Tested.
+
+---
+
+## `backend/app/agents/` — the five agents ✅
+
+### `base.py`
+| Object | Purpose |
+|---|---|
+| `PipelineContext` | State threaded through the pipeline; `transcript_for_prompt()` renders turns with `[n]` markers |
+| `Agent.run()` | Wraps `execute()` in an `agent_runs` row: prompt hash, model, I/O, tokens, latency, retries |
+| `call_llm()` | Invokes the provider and returns `(parsed, telemetry)` |
+
+> **Failure policy.** An agent declares whether it is `critical`. Failed scoring
+> fails the evaluation — a call with no scores is not an evaluation. Failed
+> sentiment/risk/summary is recorded and the pipeline continues: a missing
+> summary is a degraded result, not a reason to discard 31 good scores.
+
+> On a long call `transcript_for_prompt()` keeps **both ends**. Truncating the
+> tail would systematically penalise the CLOSING section.
+
+| Agent | Step | LLM | Critical | Writes |
+|---|---|---|---|---|
+| `PreprocessingAgent` | 1 | ✗ | ✓ | `call_statistics` |
+| `ScoringAgent` | 2 | ✓ | ✓ | `criterion_scores`, `score_citations` |
+| `SentimentAgent` | 3 | ✓ | ✗ | `sentiment_analyses`, `sentiment_timeline` |
+| `RiskAgent` | 4 | ✓ | ✗ | `risk_flags` |
+| `SummaryAgent` | 5 | ✓ | ✗ | `call_summaries` |
+
+### `scoring.py` — the core
+> **One request per SUB-SECTION, not per criterion.** 31 criteria would mean 31
+> calls: slow, expensive, and *worse quality*, because the model would judge
+> "acknowledges emotion" without seeing "uses empathy statements" even though the
+> same passage informs both. Sub-sections give 12 calls and a shared judgement
+> context — and they are the grouping the rubric author already chose.
+
+> **Citations by turn index, never by quoted text.** The model cites `[n]`; we
+> resolve stored offsets. Asking for quoted text would require string-matching
+> the model's output back into the transcript, and models paraphrase — so that
+> match fails constantly.
+
+> **The framework IS the prompt.** Each criterion's `guidance` is injected
+> verbatim. That is the whole "configurable without code changes" mechanism.
+
+> Guards: a hallucinated `criterion_code` is discarded rather than creating a
+> phantom score; a citation to a turn that does not exist is dropped; scores are
+> clamped to range; one failed sub-section does not discard the other eleven.
+
+### `sentiment.py`
+> **Trajectory, not average.** A call opening at −0.8 and closing at +0.4 is a
+> SUCCESS. Its average is still negative, so an average would rank it with a
+> mildly unhappy call and hide the best coaching signal in the dataset.
+> `sentiment_delta` is the headline metric, and it is computed in Python —
+> arithmetic should not be delegated to a language model.
+
+### `risk.py`
+> Separate from scoring because it has a different consumer (a triage queue
+> today, not coaching over weeks) and a different failure mode: a missed flag is
+> worse than a wrong score. Re-running replaces only flags a human has **not**
+> triaged — discarding a reviewer's decision would be worse than a duplicate.
+
+---
+
+## `backend/app/pipeline/` ✅
+
+### `graph.py` — LangGraph orchestration
+```
+START → preprocessing → ┬→ scoring   ─┐
+                        ├→ sentiment ─┤
+                        ├→ risk      ─┼→ aggregation → END
+                        └→ summary   ─┘
+```
+Those four agents are genuinely independent, so an evaluation takes as long as
+its slowest agent rather than the sum of all four.
+
+`PipelineState` uses `operator.add` reducers on `completed`/`failed` — without
+them LangGraph raises a concurrent-update error when the four branches write at
+once.
+
+> **Why LangGraph rather than `asyncio.gather`.** The concurrency itself is four
+> lines. What the graph buys is that the pipeline's STRUCTURE is data: it renders
+> as a diagram (`render_mermaid()`, exposed at
+> `GET /api/evaluations/pipeline/graph`), so the architecture diagram in the
+> report is generated from the code that actually runs and cannot drift.
+
+### `aggregator.py`
+Contains almost no logic, deliberately. All weighting, N/A renormalisation and
+auto-fail handling lives in `recompute_evaluation_scores()` — the same function
+used when an admin re-weights the rubric, so a fresh evaluation and a re-weighted
+historical one can never disagree.
+
+---
+
+## `backend/app/services/evaluation_service.py` ✅
+> **Promotion is deferred until success.** A new evaluation is inserted with
+> `is_current = false` and promoted only when it completes. A failed re-run
+> therefore cannot destroy a good previous result — the dashboard keeps showing
+> the last evaluation that worked, and the failure stays in history for diagnosis.
+
+## `backend/app/worker.py` ✅
+Consumes `jobs` via `claim_next_job()` (FOR UPDATE SKIP LOCKED). Handles
+SIGINT/SIGTERM by finishing the current job. Calls `reclaim_stale_jobs()` on
+startup and periodically, so a crashed worker's jobs are requeued with backoff
+rather than stranded.
+
+---
+
+## Phase 3 verification
+
+Full run over the seeded corpus, MOCK provider:
+
+| Metric | Result |
+|---|---|
+| Calls evaluated | 84 / 84, **0 failures** |
+| Criterion scores | 2,604 |
+| Citations | 2,780 — **all 2,780 slice back byte-exact** |
+| N/A scores | 140 (exercising renormalisation) |
+| Auto-fails | 11, each with a stated reason |
+| Agent runs recorded | 420, **0 failed** |
+
+Ground-truth agreement (seed data records the quality tier each block was
+generated from):
+
+| Check | Result |
+|---|---|
+| Pearson r, seeded agent skill vs AI score (n=84) | **0.64** |
+| `GREETING_BRANDED` by seeded tier | good 100% · mid 100% · poor 0% |
+| `ACKNOWLEDGE_EMOTION` by seeded tier | good 100% · mid 8.7% · poor 0% |
+
+> **An honest finding to carry into the report.** The rule baseline separates
+> *poor* from *not-poor* perfectly, but cannot tell *good* from *mid* on
+> `GREETING_BRANDED` — keyword matching detects presence, not quality. That is a
+> concrete, testable hypothesis for the LLM to beat, and a better evaluation
+> story than a single unexplained accuracy figure.
+
+## `backend/tests/` — 93 tests, all passing
+
+| File | Tests | Covers |
+|---|---|---|
+| `test_transcript_parser.py` | 30 | Parsing, offsets, speaker normalisation |
+| `test_api_integration.py` | 24 | Framework CRUD, immutability, ingestion |
+| `test_pipeline.py` | 23 | Rule engine, graph shape, end-to-end run, citations, auto-fail, rerun history |
+| `test_llm_provider.py` | 16 | Retry on 503/timeout, no-retry on 400/403, fallback ladder, truncated JSON, constrained decoding |
+
+---
+
 ## Planned
 
 | Path | Phase | Contents |
 |---|---|---|
-| `backend/app/agents/` | 3 | `preprocessing.py`, `scoring.py`, `sentiment.py`, `risk.py`, `summary.py` |
-| `backend/app/llm/` | 3 | Provider-agnostic adapter + retry/fallback ladder + `MOCK_LLM` mode |
-| `backend/app/pipeline/` | 3-4 | LangGraph orchestration + aggregator |
-| `backend/worker.py` | 3 | Job queue consumer |
 | `frontend/src/lib/api.ts` | 5 | Typed API contract — the Lovable seam |
 | `frontend/src/pages/` | 5-6 | Dashboard, call drill-down, framework admin, chat |
 | `docs/ARCHITECTURE.md` | 8 | Report-ready write-up + diagrams |

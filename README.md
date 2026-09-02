@@ -7,9 +7,10 @@ way to review them. CALL-ANALYZER evaluates every call against a **hierarchical,
 business-configurable quality framework** using a multi-agent AI pipeline, and
 makes every score explainable down to the exact sentence that justified it.
 
-> **Status: Phase 2 of 8 complete.** Database schema, scoring engine, seed data
-> and the backend API are built and verified — 54 backend tests and 4 SQL
-> scoring-engine assertions passing. See [CODEMAP.md](CODEMAP.md) for what every file
+> **Status: Phase 3 of 8 complete.** Schema, scoring engine, backend API and the
+> five-agent evaluation pipeline are built and verified — **93 backend tests**
+> and 4 SQL scoring-engine assertions passing, with all 84 seeded calls
+> evaluated end to end. See [CODEMAP.md](CODEMAP.md) for what every file
 > does.
 
 ---
@@ -96,8 +97,22 @@ uv pip install -e ".[dev]"
 Interactive API docs: <http://localhost:8000/docs> — 29 endpoints.
 
 ```bash
-.venv/bin/python -m pytest tests/ -q      # 54 tests
+.venv/bin/python -m pytest tests/ -q      # 93 tests
 ```
+
+### Run the evaluation pipeline
+
+```bash
+# Evaluate every unevaluated call (queues jobs)
+curl -X POST http://localhost:8000/api/evaluations/bulk -H 'Content-Type: application/json' -d '{}'
+
+# Start the worker to drain the queue
+cd backend && MOCK_LLM=true .venv/bin/python -m app.worker
+```
+
+`MOCK_LLM=true` runs the whole pipeline with **zero API calls** using
+deterministic keyword rules — not a local model, nothing downloaded. Set it to
+`false` to use Gemini.
 
 ### Reset to a clean seeded state
 
@@ -168,9 +183,9 @@ reason recorded — so the UI never shows an unexplained zero.
 |---|---|---|
 | 1 | DB schema, scoring engine, seed data | ✅ **Complete & verified** |
 | 2 | Backend APIs — framework CRUD, ingestion | ✅ **Complete & verified** |
-| 3 | Agent pipeline — scoring + summary end-to-end, then sentiment + risk | ⬜ Next |
-| 4 | Aggregation & score computation wiring | ⬜ |
-| 5 | React dashboard — overview + drill-down | ⬜ |
+| 3 | Agent pipeline — 5 agents, LangGraph orchestration, job worker | ✅ **Complete & verified** |
+| 4 | Aggregation & score computation wiring | ✅ **Done in Phase 3** |
+| 5 | React dashboard — overview + drill-down | ⬜ Next |
 | 6 | Admin panel for the dynamic framework | ⬜ |
 | 7 | RAG chatbot | ⬜ |
 | 8 | Polish, architecture diagram, report write-up | ⬜ |

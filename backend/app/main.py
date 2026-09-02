@@ -14,7 +14,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import db
 from app.config import get_settings
 from app.errors import AppError, app_error_handler, postgres_error_handler
-from app.routers import calls, framework, ingestion, meta
+from app.llm import close_provider
+from app.routers import calls, evaluations, framework, ingestion, meta
 
 settings = get_settings()
 
@@ -41,15 +42,16 @@ async def lifespan(_: FastAPI):
         log.warning("AUTH_DEV_BYPASS is ON — unauthenticated requests are treated as admin")
     log.info("CALL-ANALYZER API ready")
     yield
+    await close_provider()
     await db.disconnect()
 
 
 app = FastAPI(
     title="CALL-ANALYZER API",
-    version="0.2.0",
+    version="0.3.0",
     description=(
         "AI-powered customer support call intelligence.\n\n"
-        "**Phase 2** — quality framework CRUD and transcript ingestion.\n\n"
+        "**Phase 3** — multi-agent evaluation pipeline.\n\n"
         "The framework is versioned copy-on-write: published versions are immutable, "
         "edits happen on a draft, and publishing validates that weights sum to 100 at "
         "every level. Re-weighting a rubric re-scores history with zero LLM calls."
@@ -72,8 +74,9 @@ app.include_router(meta.router)
 app.include_router(framework.router)
 app.include_router(calls.router)
 app.include_router(ingestion.router)
+app.include_router(evaluations.router)
 
 
 @app.get("/", include_in_schema=False)
 async def root():
-    return {"name": "CALL-ANALYZER API", "version": "0.2.0", "docs": "/docs"}
+    return {"name": "CALL-ANALYZER API", "version": "0.3.0", "docs": "/docs"}
