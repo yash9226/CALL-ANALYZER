@@ -216,8 +216,20 @@ class TestCalls:
 
         assert detail["transcript"]["full_text"]
         assert len(detail["turns"]) == detail["transcript"]["turn_count"]
-        # No evaluation yet — Phase 3 populates these.
-        assert detail["criterion_scores"] == []
+
+        # Once a call has been evaluated the drill-down must carry the whole
+        # picture in one response: scores with citations, rollups, and the
+        # agent-run trace. Before evaluation those are empty, and both states
+        # are valid — so assert consistency rather than a fixed shape.
+        if detail["evaluation_id"]:
+            assert len(detail["criterion_scores"]) == 31
+            assert len(detail["section_scores"]) == 5
+            assert len(detail["subsection_scores"]) == 12
+            assert detail["agent_runs"], "an evaluated call must expose its pipeline trace"
+            assert any(s["citations"] for s in detail["criterion_scores"]), \
+                "at least one score must cite the transcript"
+        else:
+            assert detail["criterion_scores"] == []
 
     async def test_turn_offsets_slice_back_exactly(self, client):
         """The citation invariant, verified through the API."""

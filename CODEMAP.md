@@ -618,6 +618,38 @@ generated from):
 | `GREETING_BRANDED` by seeded tier | good 100% · mid 100% · poor 0% |
 | `ACKNOWLEDGE_EMOTION` by seeded tier | good 100% · mid 8.7% · poor 0% |
 
+### Live Gemini validation
+
+One call was also evaluated with the real provider, end to end:
+
+| | Rule baseline (mock) | Gemini 3.6/3.1-flash |
+|---|---|---|
+| Score | 64.5% (grade D) | **0% (grade F, auto-fail)** |
+| `IDENTITY_VERIFICATION` | 1 (met) | **0 (not met)** |
+| `PLAIN_LANGUAGE` | 0 | 5 |
+| `ROOT_CAUSE_ID` | 0 | 5 |
+| Wall time / cost | 94 ms / $0 | 195 s / **$0.0043** |
+
+Gemini's reasoning on the criterion that flipped the result:
+
+> *"The agent only requested the account number and did not perform a two-factor
+> verification process before discussing the account status and area outage."*
+
+The rubric guidance requires **at least two identifiers**. The agent asked for
+one. The keyword rule saw "account number" and passed it; the LLM read the
+guidance and correctly auto-failed the call.
+
+This is the clearest justification in the project for using an LLM rather than
+keyword rules, and it is measured rather than asserted. It also shows the two
+scorers disagreeing in *both* directions: the rules under-scored
+`PLAIN_LANGUAGE` and `ROOT_CAUSE_ID`, which need semantic judgement they cannot
+perform.
+
+**The fallback ladder engaged for real.** `model_used` on that evaluation reads
+`gemini-3.1-flash-lite, gemini-3.6-flash`: the primary model hit HTTP 429 quota
+exhaustion mid-run and the remaining sub-sections were scored by the fallback.
+The evaluation still completed with all 31 criteria scored and no errors.
+
 > **An honest finding to carry into the report.** The rule baseline separates
 > *poor* from *not-poor* perfectly, but cannot tell *good* from *mid* on
 > `GREETING_BRANDED` — keyword matching detects presence, not quality. That is a

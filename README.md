@@ -114,6 +114,11 @@ cd backend && MOCK_LLM=true .venv/bin/python -m app.worker
 deterministic keyword rules — not a local model, nothing downloaded. Set it to
 `false` to use Gemini.
 
+Both paths are verified. A single call evaluated with real Gemini took 195s and
+cost **$0.0043**; the same call under the rule baseline took 94ms and cost
+nothing. They disagreed usefully — see the comparison in
+[CODEMAP.md](CODEMAP.md#live-gemini-validation).
+
 ### Reset to a clean seeded state
 
 ```bash
