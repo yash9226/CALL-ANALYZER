@@ -213,24 +213,38 @@ async def get_call_detail(user, call_id: UUID) -> dict:
                         from score_citations sc where sc.criterion_score_id = cs.id),
                      '[]'::jsonb) as citations
               from criterion_scores cs
+              left join criteria c on c.id = cs.criterion_id
              where cs.evaluation_id = $1
-             order by cs.section_code, cs.subsection_code, cs.criterion_code
+             order by coalesce(c.display_order, 999), cs.criterion_code
             """,
             evaluation_id,
         )
+        # Ordered by the rubric's own display_order, not alphabetically. A
+        # scorecard read out of sequence is disorienting: the reviewer expects
+        # Opening -> Communication -> Resolution -> Compliance -> Closing,
+        # which is the order the call itself happened in.
         sections = await db.fetch(
             """
-            select section_code, section_name, weight_snapshot, normalized,
-                   subsections_total, subsections_scored
-              from section_scores where evaluation_id = $1 order by section_code
+            select ss.section_code, ss.section_name, ss.weight_snapshot, ss.normalized,
+                   ss.subsections_total, ss.subsections_scored
+              from section_scores ss
+              left join sections s on s.id = ss.section_id
+             where ss.evaluation_id = $1
+             order by coalesce(s.display_order, 999), ss.section_code
             """,
             evaluation_id,
         )
         subsections = await db.fetch(
             """
-            select subsection_code, subsection_name, section_code, weight_snapshot,
-                   normalized, criteria_total, criteria_scored
-              from subsection_scores where evaluation_id = $1 order by section_code, subsection_code
+            select sub.subsection_code, sub.subsection_name, sub.section_code,
+                   sub.weight_snapshot, sub.normalized, sub.criteria_total,
+                   sub.criteria_scored
+              from subsection_scores sub
+              left join subsections ss on ss.id = sub.subsection_id
+              left join sections s on s.id = ss.section_id
+             where sub.evaluation_id = $1
+             order by coalesce(s.display_order, 999), coalesce(ss.display_order, 999),
+                      sub.subsection_code
             """,
             evaluation_id,
         )

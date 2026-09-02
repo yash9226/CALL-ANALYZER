@@ -189,7 +189,15 @@ class ScoringAgent(Agent):
     async def execute(self, ctx: PipelineContext) -> dict:
         semaphore = asyncio.Semaphore(self.max_concurrency)
         aggregate = {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0,
-                     "attempts": 0, "model": None, "prompt": None, "raw_text": None}
+                     # `attempts` counts RETRY PRESSURE, not request volume.
+                     # This agent issues one request per sub-section, so summing
+                     # raw attempt counts would report a clean 12-request run as
+                     # "retried x12" — which is what the pipeline UI showed
+                     # before this was fixed. We instead accumulate only the
+                     # attempts BEYOND the first for each request, and add 1 at
+                     # the end, so 1 means "no retries anywhere".
+                     "retries": 0, "requests": 0,
+                     "model": None, "prompt": None, "raw_text": None}
 
         async def score_one(subsection: dict) -> list[dict]:
             async with semaphore:
@@ -203,7 +211,8 @@ class ScoringAgent(Agent):
                 aggregate["input_tokens"] += meta["input_tokens"]
                 aggregate["output_tokens"] += meta["output_tokens"]
                 aggregate["cost_usd"] += meta["cost_usd"]
-                aggregate["attempts"] += meta["attempts"]
+                aggregate["retries"] += max(0, meta["attempts"] - 1)
+                aggregate["requests"] += 1
                 aggregate["model"] = meta["model"]
                 # Keep one representative prompt for the agent_runs trace rather
                 # than twelve, which would bloat every row.
@@ -251,8 +260,12 @@ class ScoringAgent(Agent):
         await self._persist(ctx, scores)
         ctx.scores = scores
 
+        aggregate["attempts"] = 1 + aggregate.pop("retries")
+        requests = aggregate.pop("requests")
+
         return {
             "scored_criteria": len(scores),
+            "subsection_requests": requests,
             "failed_subsections": failed_subsections,
             "_llm_meta": aggregate,
         }

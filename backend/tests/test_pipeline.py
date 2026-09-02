@@ -326,3 +326,34 @@ class TestPipelineApi:
 
         await db.execute("delete from jobs where id = $1::uuid", body["job_id"])
         await drop_evaluation(body["evaluation_id"])
+
+
+class TestAgentRunTelemetry:
+    """attempt_count must mean 'how many retries did this need', not 'how many
+    requests did it make'. The scoring agent issues one request per sub-section,
+    so summing raw attempts reported a clean 12-request run as 'retried x12' in
+    the pipeline UI — a number that looked alarming and meant nothing."""
+
+    async def test_clean_run_records_no_retries(self, evaluated_call):
+        row = await db.fetchrow(
+            """
+            select attempt_count, parsed_output from agent_runs
+             where evaluation_id = $1::uuid and agent_name = 'scoring'
+            """,
+            evaluated_call["evaluation_id"],
+        )
+        assert row["attempt_count"] == 1, (
+            f"a run with no retries reported attempt_count={row['attempt_count']}"
+        )
+
+    async def test_request_count_is_reported_separately(self, evaluated_call):
+        """The number of sub-section requests is still useful — it just is not
+        the same thing as the retry count."""
+        row = await db.fetchrow(
+            """
+            select parsed_output from agent_runs
+             where evaluation_id = $1::uuid and agent_name = 'scoring'
+            """,
+            evaluated_call["evaluation_id"],
+        )
+        assert row["parsed_output"]["subsection_requests"] == 12
