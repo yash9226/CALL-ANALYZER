@@ -724,11 +724,56 @@ Type-checks clean under `strict: true`.
 > offsets. The frontend must never text-search for a citation's `quoted_text` —
 > models paraphrase, so that search fails.
 
-## `docs/LOVABLE_PROMPT.md` ✅
-The paste-ready prompt: non-negotiable rules, design system, semantic colour
-table, page-by-page specification for the dashboard / calls list / drill-down,
-behaviour requirements, realistic mock values drawn from the actual seeded
-corpus, and a verification checklist.
+## `docs/LOVABLE_PROMPT.md` ✅ — 6-part prompt pack (808 lines)
+
+| Part | Contents |
+|---|---|
+| 0 | What Lovable actually generates, verified: React + Vite + TS + Tailwind + shadcn/ui + React Router — and **Supabase by default** |
+| 1 | Knowledge file (pasted into Lovable's project context, re-read every message) |
+| 2 | Prompt 1 — design system, app shell, dashboard |
+| 3 | Prompt 2 — calls list + drill-down |
+| 4 | Prompt 3 — framework admin panel |
+| 5 | Prompt 4 — manager assistant (chat) |
+| 6 | Verification checklist + integration steps |
+
+> **Why the Supabase prohibition is repeated in every prompt.** Lovable's
+> default backend *is* Supabase — it will create tables and query them unless
+> told otherwise, repeatedly. The Knowledge file exists because Lovable re-reads
+> it on every message, which is what stops the drift mid-build. There is also a
+> scripted recovery message for when it happens anyway.
+
+> **Split into four prompts rather than one.** Lovable produces materially
+> better work on focused instructions, and correcting a five-page single-shot
+> generation is painful.
+
+### The colour system carries a real accessibility fix
+
+The palette is specified as exact shadcn HSL variables for both themes. Each
+semantic colour has **three variants**, because one value cannot do three jobs:
+
+| Variant | Used for |
+|---|---|
+| `-text` | coloured numbers and labels — darkened to pass WCAG AA |
+| base | bar fills, chart series, badge backgrounds |
+| `-soft` | transcript highlight tints, callout backgrounds |
+
+Measured on white, emerald at its natural brightness scores **2.59:1** and amber
+**2.14:1** — both fail the 4.5:1 minimum. Score numbers are text, so a naive
+palette would have rendered the product's most-read figures hard to read. The
+`-text` variants (emerald 28% L, amber 36% L) measure 4.74 and 4.51.
+
+Every token in the final palette passes AA in both themes:
+
+| | light | dark |
+|---|---|---|
+| success-text | 4.74 | 9.91 |
+| warning-text | 4.51 | 11.27 |
+| danger-text | 5.81 | 5.30 |
+| primary | 6.18 | 4.64 |
+| muted-foreground | 4.85 | 7.49 |
+
+Mock values in the prompt are taken from the live database, so the generated UI
+looks like the real product rather than lorem ipsum.
 
 ## `backend/tests/test_api_contract.py` ✅ — guards the seam
 18 tests freezing the field names the frontend depends on.

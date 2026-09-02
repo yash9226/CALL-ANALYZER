@@ -1,387 +1,833 @@
-# Lovable prompt — CALL-ANALYZER frontend (Phase 5)
+# Lovable prompt pack — CALL-ANALYZER frontend
 
-**How to use this file**
-
-1. Copy everything between the `=== PROMPT START ===` and `=== PROMPT END ===`
-   markers into Lovable as your first message.
-2. When Lovable asks for the API contract, paste the **entire contents** of
-   [`frontend/src/lib/api.ts`](../frontend/src/lib/api.ts) as your second
-   message. (Or paste both at once if the input allows it.)
-3. Export / download the generated project and hand it back — I will wire it to
-   the live backend, which is a single-file change because everything routes
-   through `api.ts`.
-
-**Why the prompt is written this way.** Left alone, Lovable invents its own
-Supabase tables and queries. Merging that into a real schema is miserable. So
-the prompt forbids it and pins every network call to `api.ts`, whose types match
-the live FastAPI schema exactly. That one constraint is what makes the handoff
-a swap rather than a rewrite.
-
-This prompt covers **Phase 5 only** — dashboard, calls list, call drill-down,
-plus the app shell. The Admin panel (Phase 6) and Chat (Phase 7) are stubbed as
-routes so navigation does not need rebuilding later; I will supply follow-up
-prompts for those.
+Everything needed to generate the UI in Lovable and hand it back for wiring.
 
 ---
+
+## 0. What Lovable actually generates (verified, Sept 2026)
+
+| Layer | What Lovable produces |
+|---|---|
+| Language | **TypeScript** |
+| Framework | **React 18** |
+| Build tool | **Vite** |
+| Styling | **Tailwind CSS** |
+| Components | **shadcn/ui** (Radix primitives) |
+| Routing | **React Router** |
+| Icons | **lucide-react** |
+| Charts | **Recharts** (its default when you ask for charts) |
+| Backend | **Supabase by default** ← the thing we must switch off |
+
+That last row is the whole reason this pack is written the way it is. Left to
+its own devices Lovable will create Supabase tables, write its own queries, and
+build the UI against a schema it invented. Merging that into our real schema
+would be a rewrite, not an integration.
+
+So every prompt below states, in capitals and more than once: **do not create or
+connect to Supabase.** All data flows through one hand-written file,
+`src/lib/api.ts`, whose types mirror our live FastAPI schema exactly.
+
+### How to use this pack
+
+1. **Paste Part 1 into Lovable's Knowledge / Project Context box** (Settings →
+   Knowledge). Lovable re-reads this on every message, which is what stops it
+   drifting back to Supabase halfway through.
+2. **Paste the whole of `frontend/src/lib/api.ts`** as your first chat message,
+   prefixed with: *"This is the API contract. Save it as `src/lib/api.ts`. Every
+   network call in this app must go through it."*
+3. **Then send Prompt 1.** Wait for it to finish and look right.
+4. **Then Prompt 2, 3, 4** in order, one at a time.
+
+Do not paste all four prompts at once. Lovable produces noticeably better work
+on focused instructions, and a five-page single-shot generation is painful to
+correct.
+
+---
+
+## Part 1 — Knowledge file
+
+> Paste this into **Settings → Knowledge** in Lovable, before any prompt.
 
 ```
-=== PROMPT START ===
+# CALL-ANALYZER — Project Knowledge
 
-Build a production-quality analytics dashboard for CALL-ANALYZER, an
-AI-powered customer support call quality platform. Support managers use it to
-review call transcripts that have been automatically scored against a weighted
-quality rubric by a multi-agent AI pipeline.
+## What this product is
+An AI-powered customer support call intelligence platform. Support teams
+generate thousands of call transcripts. Managers have no scalable way to review
+them. CALL-ANALYZER automatically scores every call against a weighted quality
+rubric using a five-agent AI pipeline, and makes every score explainable down to
+the exact sentence in the transcript that justified it.
 
-## NON-NEGOTIABLE RULES
+## Who uses it
+- **Admin** — owns the quality rubric, sees every team, runs evaluations.
+- **Manager** — reviews their own team's calls, coaches agents, triages
+  compliance flags. This is the primary user; design for them.
+- **Agent** — sees only their own calls and scores.
 
-1. ALL data comes from `src/lib/api.ts`, which I am providing. Import from it.
-   Never write a raw `fetch` anywhere else.
-2. DO NOT create, connect to, or query Supabase. DO NOT create any database
-   tables. The backend already exists. This app is a pure API client.
-3. DO NOT invent fields. If a value is not in the TypeScript types in api.ts,
-   the backend does not return it. Do not fabricate placeholder data to fill a
-   chart. If something is missing, render an empty state.
-4. Use the exact type names from api.ts. Do not redefine them.
-5. Set `export const MOCK = true;` at the top of api.ts during development so
-   the app renders without a backend, and build the fixtures to match the real
-   shapes and the realistic values given below.
+## The domain, in one paragraph
+A "call" has a transcript split into speaker "turns". A "framework" (rubric) is
+a three-level tree: Sections → Sub-sections → Criteria, each with a percentage
+weight. An "evaluation" scores one call against one framework version, producing
+a score per criterion, rolled up through sub-sections and sections into a final
+percentage and an A–F grade. Two criteria are marked CRITICAL — failing either
+one forces the whole call to 0% ("auto-fail"). Some criteria can be marked "not
+applicable" when the situation never arose.
 
-## TECH STACK
+## CRITICAL TECHNICAL CONSTRAINTS — these override everything else
 
-- React 18 + TypeScript + Vite
-- Tailwind CSS + shadcn/ui components
-- Recharts for all charts
-- React Router for routing
-- TanStack Query (react-query) for data fetching, with a 30s staleTime
-- lucide-react for icons
-- date-fns for date formatting
+1. **DO NOT create, connect to, enable, or query Supabase.** Do not create
+   database tables. Do not use the Supabase client. The backend already exists
+   as a separate FastAPI service. This app is a pure API client.
+2. **ALL data comes from `src/lib/api.ts`.** Import from it. Never write `fetch`
+   anywhere else in the codebase.
+3. **DO NOT invent fields.** If a value is not in the TypeScript types in
+   api.ts, the backend does not return it. Render an empty state instead of
+   fabricating data.
+4. **DO NOT redefine the types** in api.ts. Import them.
+5. During UI development, `api.ts` has `export const MOCK = true` and serves
+   fixtures with identical shapes. Build against those.
 
-## DESIGN DIRECTION
+## Three domain rules the UI must respect
 
-Serious, information-dense, calm. This is a professional analytics tool that a
-support manager stares at all day — not a marketing page. No gradients on cards,
-no decorative illustrations, no oversized hero sections.
+1. **A not-applicable criterion renders as "N/A", never as 0.** The backend
+   removes it from the weighted total entirely. Showing 0 misrepresents the
+   agent's performance.
+2. **An auto-failed call shows 0% together with its reason.** Never display a
+   bare unexplained zero.
+3. **Citation highlighting uses stored character offsets** (`char_start`,
+   `char_end`), never a text search for the quoted string. The AI paraphrases
+   when it quotes, so searching fails. The offsets are guaranteed exact against
+   `transcript.full_text`.
 
-- Light and dark mode, toggled in the header, persisted to localStorage
-- Base font size 14px; tabular numerals for all figures (`font-variant-numeric:
-  tabular-nums`) so columns of numbers align
-- Generous whitespace, 1px borders, subtle shadows only on overlays
-- Neutral slate/zinc palette for chrome; colour reserved for data meaning
+## Product tone
+A serious, information-dense analytics tool that a support manager stares at for
+hours. Calm, precise, trustworthy. Not a marketing site. No hero sections, no
+decorative illustrations, no gradient-filled cards, no emoji in the UI.
+```
 
-**Semantic colour, used consistently everywhere:**
+---
+## Part 2 — Prompt 1: design system, app shell, dashboard
 
-| Meaning | Colour | Used for |
+> Send this after pasting `api.ts`.
+
+```
+Build the foundation and the dashboard for CALL-ANALYZER.
+
+Before writing code, read the Knowledge file and confirm in one short paragraph
+what you understood, especially the constraint about not using Supabase.
+
+## STACK
+React 18 + TypeScript + Vite, Tailwind CSS, shadcn/ui, React Router,
+TanStack Query (react-query), Recharts, lucide-react, date-fns.
+
+## ═══ DESIGN SYSTEM ═══
+
+Set these exact CSS variables in src/index.css. Do not substitute your own
+palette. This is a deliberate, tested colour system.
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 224 20% 12%;
+    --card: 0 0% 100%;
+    --card-foreground: 224 20% 12%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 224 20% 12%;
+    --primary: 243 75% 59%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 14% 96%;
+    --secondary-foreground: 224 20% 20%;
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 9% 46%;
+    --accent: 220 14% 96%;
+    --accent-foreground: 224 20% 20%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 243 75% 59%;
+    --radius: 0.625rem;
+
+    /* Semantic data colours — meaning, not decoration.
+       Three variants each, because one value cannot serve all three jobs:
+         -text : darkened to pass WCAG AA (4.5:1) as TEXT on the page
+         (base): the fill for bars, chart series and badge backgrounds
+         -soft : a tint for highlighted transcript turns and callouts
+       Emerald and amber at their natural brightness measure 2.6:1 and 2.1:1 on
+       white — they FAIL as text. Score numbers are text, so they use -text. */
+    --success: 160 84% 39%;
+    --success-text: 160 84% 28%;
+    --success-soft: 152 76% 94%;
+    --warning: 38 92% 50%;
+    --warning-text: 32 95% 36%;
+    --warning-soft: 48 100% 94%;
+    --danger: 0 72% 51%;
+    --danger-text: 0 72% 45%;
+    --danger-soft: 0 86% 96%;
+    --neutral-data: 220 9% 46%;
+
+    /* Categorical chart series */
+    --chart-1: 243 75% 59%;
+    --chart-2: 173 80% 36%;
+    --chart-3: 38 92% 50%;
+    --chart-4: 340 82% 58%;
+    --chart-5: 258 90% 66%;
+    --chart-6: 199 89% 48%;
+  }
+
+  .dark {
+    --background: 224 24% 7%;
+    --foreground: 210 20% 96%;
+    --card: 224 20% 10%;
+    --card-foreground: 210 20% 96%;
+    --popover: 224 20% 10%;
+    --popover-foreground: 210 20% 96%;
+    --primary: 243 80% 68%;
+    --primary-foreground: 224 24% 7%;
+    --secondary: 223 18% 16%;
+    --secondary-foreground: 210 20% 96%;
+    --muted: 223 18% 16%;
+    --muted-foreground: 218 12% 65%;
+    --accent: 223 18% 18%;
+    --accent-foreground: 210 20% 96%;
+    --destructive: 0 84% 62%;
+    --destructive-foreground: 210 20% 98%;
+    --border: 223 18% 19%;
+    --input: 223 18% 19%;
+    --ring: 243 80% 68%;
+
+    /* On the dark background these already measure 9.9:1, 11.3:1 and 5.3:1,
+       so text and fill can share a value. */
+    --success: 158 64% 52%;
+    --success-text: 158 64% 52%;
+    --success-soft: 161 84% 12%;
+    --warning: 43 96% 56%;
+    --warning-text: 43 96% 56%;
+    --warning-soft: 35 92% 12%;
+    --danger: 0 84% 62%;
+    --danger-text: 0 84% 62%;
+    --danger-soft: 0 63% 14%;
+    --neutral-data: 218 12% 65%;
+
+    --chart-1: 243 80% 68%;
+    --chart-2: 172 66% 50%;
+    --chart-3: 43 96% 56%;
+    --chart-4: 340 82% 66%;
+    --chart-5: 258 90% 74%;
+    --chart-6: 199 89% 60%;
+  }
+}
+
+Extend tailwind.config.ts so all of these are usable as Tailwind classes:
+bg-success, text-success-text, bg-success-soft, and the same for warning and
+danger, plus chart-1 through chart-6.
+
+**Use the right variant.** Any COLOURED NUMBER OR LABEL uses the `-text`
+variant. Bars, chart series and badge fills use the base. Highlight tints use
+`-soft`. This is not stylistic fussiness: at their natural brightness emerald
+measures 2.6:1 and amber 2.1:1 against white, both well below the 4.5:1 minimum,
+so a score rendered in the base colour is genuinely hard to read.
+
+Solid badges: `bg-danger` takes white text (4.8:1, passes). `bg-success` and
+`bg-warning` do NOT — give those foreground-coloured text, or use the soft
+background with `-text` foreground instead.
+
+### Typography
+- UI font: **Inter** (via Google Fonts), weights 400/500/600/700.
+- Numeric font feature: apply `font-variant-numeric: tabular-nums` globally to
+  every number in a table or KPI, so columns of figures align.
+- Monospace: **JetBrains Mono** for call codes, criterion codes, and IDs only.
+- Base size 14px. Page titles 20px/600. Card titles 14px/600. KPI values
+  30px/700. Table body 13px.
+
+### Spacing and shape
+- Card radius 10px (--radius). Buttons and inputs 8px. Badges fully rounded.
+- Card padding 20px. Grid gap 16px. Page padding 24px.
+- Borders: 1px solid hsl(var(--border)). Shadows ONLY on popovers, dropdowns and
+  dialogs — cards use borders, not shadows.
+
+### THE SCORE COLOUR RULE (used identically everywhere)
+score >= 80  -> success  (text: text-success-text, bar: bg-success)
+score 60-79  -> warning  (text: text-warning-text, bar: bg-warning)
+score <  60  -> danger   (text: text-danger-text,  bar: bg-danger)
+not applicable -> muted-foreground, never red, never zero
+auto-fail -> solid danger badge, always with the reason text
+
+Never use colour as the only signal. Always pair it with a number, label or
+icon, for accessibility and for greyscale printing.
+
+## ═══ APP SHELL ═══
+
+Left sidebar, 240px, collapsible to 64px icons, state persisted to
+localStorage:
+- Top: a small waveform/audio-lines icon in primary, wordmark "CALL-ANALYZER"
+  in 15px/700 with tight letter-spacing.
+- Nav items with lucide icons: LayoutDashboard "Dashboard" (/),
+  PhoneCall "Calls" (/calls), SlidersHorizontal "Framework" (/admin),
+  MessageSquareText "Assistant" (/chat).
+- Active item: primary-tinted background, primary left border 2px, medium weight.
+- Bottom: theme toggle (Sun/Moon, persisted to localStorage), then a user chip
+  with initials avatar, name, and a small role badge.
+
+Header bar on every page: page title on the left, the global filter bar on the
+right, and a muted "Updated {relative time}" caption.
+
+### Global filter bar — one shared component
+State lives in the URL query string so a filtered view can be copied and shared.
+- Date range: presets "Last 7 days", "Last 30 days", "Last 6 weeks" (DEFAULT),
+  "All time", plus a custom range picker.
+- Team select — from api.teams.list().
+- Agent select — from api.analytics.agents(), filtered to the chosen team.
+- "Reset" button, visible only when a filter is active.
+- Active filters render as removable chips beneath the bar.
+
+Every page reads these and passes them straight into its API calls.
+
+Routes /admin and /chat: render a centred card, "Coming in the next phase".
+Build the nav entries, not the pages.
+
+## ═══ PAGE: DASHBOARD (route /) ═══
+
+Data: api.analytics.* — see api.ts for exact types.
+
+### Row 1 — six KPI cards (grid: 6 cols desktop, 3 tablet, 2 mobile)
+Source: api.analytics.overview(filters) -> AnalyticsOverview
+
+Each card: muted 12px uppercase label with letter-spacing, then a 30px/700
+value, then a sub-line. Trend arrow chip in the top-right.
+
+| Label | Value | Sub-line |
 |---|---|---|
-| Excellent (>=80) | emerald | scores, grade A/B |
-| Satisfactory (60-79) | amber | scores, grade C/D |
-| Poor (<60) | red | scores, grade F |
-| Critical / auto-fail | red-600 with a solid badge | never subtle |
-| Supporting evidence | emerald background tint | citation highlights |
-| Detracting evidence | red background tint | citation highlights |
-| Not applicable | zinc / muted | never red, never zero |
+| AVERAGE SCORE | current.avg_score, "54.2%" | trend from change_pct.avg_score |
+| CALLS EVALUATED | current.evaluated_calls | "{evaluation_coverage_pct}% of {total_calls}" |
+| AUTO-FAIL RATE | auto_fail_rate, "14.6%" | "{current.auto_fails} calls" — card border turns danger above 10% |
+| CRITICAL FLAGS | current.critical_flags | "{current.total_flags} total flags" |
+| SENTIMENT RECOVERY | current.avg_sentiment_delta, "+0.43" | "closing minus opening" |
+| ACTIVE AGENTS | current.active_agents | "{formatDuration(avg_duration_seconds)} avg call" |
 
-Never use colour as the only signal — pair it with a label or icon, for
-accessibility.
+Trend arrows: green up / red down for score and sentiment. INVERT for auto-fails
+and flags, where fewer is better. When change_pct.X is null, render an em-dash
+"—" and no arrow. Null means there is no comparable prior period; rendering
+"0%" would be a false statement.
 
-## APP SHELL
+### Row 2 — score trend (full width card)
+Source: api.analytics.trend({...filters, granularity})
 
-Persistent left sidebar (collapsible to icons on small screens):
-- Logo: "CALL-ANALYZER" with a waveform icon
-- Nav: Dashboard (/), Calls (/calls), Framework (/admin) [stub], Assistant
-  (/chat) [stub]
-- Bottom: theme toggle, and a user chip showing name + role badge
+Recharts ComposedChart:
+- Bars: `calls` on the right Y axis, fill hsl(var(--muted-foreground)) at 15%
+  opacity, no stroke.
+- Line: `avg_score` on the left Y axis fixed 0–100, stroke chart-1, 2.5px,
+  dot only on hover, activeDot r=5.
+- Optional dashed line: `avg_sentiment` rescaled to 0–100, chart-2, toggled by a
+  legend checkbox, off by default.
+- Header: title "Quality trend" plus a segmented Day / Week / Month toggle,
+  defaulting to Week.
+- CartesianGrid: horizontal lines only, border colour, strokeDasharray 3 3.
+- Custom tooltip card showing every metric for that bucket including auto_fails.
+- Empty state: "No calls in this period."
 
-Top header on every page: page title, a global filter bar, and a "Last updated"
-timestamp.
+### Row 3 — two cards, 50/50
+**Left, "Where we're weakest"** — api.analytics.sections()
+Horizontal bars. The API already returns weakest-first; PRESERVE that order, it
+is the entire point of the chart. Each row: section name, a bar coloured by the
+score rule, the percentage right-aligned in 15px/600, and the section weight as
+a small muted chip ("25% weight"). Clicking a row navigates to
+/calls?sort_by=score&sort_dir=asc.
 
-**Global filter bar** — a single shared component whose state is held in the URL
-query string so a filtered view can be copied and shared:
-- Date range picker with presets: Last 7 days, Last 30 days, Last 6 weeks
-  (default), All time
-- Team dropdown (from `api.teams.list()`)
-- Agent dropdown (from `api.analytics.agents()`), filtered by the selected team
-- A "Reset" button, shown only when a filter is active
+**Right, "Score distribution"** — api.analytics.distribution()
+Bar chart over `bands`. RENDER ALL TEN BANDS INCLUDING EMPTY ONES — the API
+returns them deliberately so the x-axis stays stable; filtering them out
+misrepresents the shape. Colour each bar by the score rule. Beneath, a compact
+A/B/C/D/F tally row with counts.
 
-Every page reads these filters and passes them straight into the API calls.
+### Row 4 — two cards, 60/40
+**Left, "Agent leaderboard"** — api.analytics.agents()
+Sortable table: Agent (name, with agent_code muted beneath), Team chip, Calls,
+Avg score (coloured, 15px/600), Consistency, Auto-fails, Sentiment Δ.
 
-Routes /admin and /chat render a simple centred "Coming in the next phase"
-placeholder card. Build the nav entries, but not the pages.
+For Consistency render a small horizontal range bar spanning min_score to
+max_score with a marker at avg_score, and the σ value (score_stddev) beside it.
+This distinction matters: a steady 78 and an erratic 60–95 average the same but
+are completely different coaching problems. Tooltip: "Lower σ means more
+consistent." Row click → /calls?support_agent_id={id}.
 
----
+**Right, "Coaching priorities"** — api.analytics.criteria({ limit: 8 })
+Already worst-first. Per row: criterion_name in 13px/600; section_code /
+subsection_code as a muted breadcrumb above; a thin avg_score bar; fail_rate_pct
+as bold danger text on the right; a solid danger "CRITICAL" badge when
+is_critical. Where not_applicable > 0, a muted footnote "N/A on {n} calls".
 
-## PAGE 1 — DASHBOARD (route: /)
+### Row 5 — two cards, 50/50
+**Left, "Open risk flags"** — api.analytics.flags({ limit: 8 })
+A row of severity chips from by_severity (critical=danger solid, high=danger
+outline, medium=warning, low=muted). Then recent_open as a list: severity badge,
+title in 13px/600, then "{call_code} · {agent_name} · {relative time}" muted.
+Row click opens that call. Empty state: "No open flags."
 
-### Row 1: six KPI cards
-Data: `api.analytics.overview(filters)` -> `AnalyticsOverview`
+**Right, "Topics"** — api.analytics.topics()
+Table: topic (formatted from snake_case to Title Case), calls, avg score
+(coloured), avg sentiment as a small −1..+1 diverging bar. Click →
+/calls?topic={topic}.
 
-| Card | Value | Sub-line |
-|---|---|---|
-| Average score | `current.avg_score` as `54.3%` | trend arrow from `change_pct.avg_score` |
-| Calls evaluated | `current.evaluated_calls` | `evaluation_coverage_pct`% of `total_calls` |
-| Auto-fail rate | `auto_fail_rate` as `14.6%` | `current.auto_fails` calls, red if > 10% |
-| Critical flags | `current.critical_flags` | `current.total_flags` total flags |
-| Sentiment recovery | `current.avg_sentiment_delta` as `+0.43` | "closing minus opening" |
-| Active agents | `current.active_agents` | `formatDuration(current.avg_duration_seconds)` avg call |
+## ═══ BEHAVIOUR ═══
+- TanStack Query for every call. staleTime 30000. Query keys include the filters.
+- Loading: skeletons shaped like the real content. Never a full-page spinner.
+- Errors: catch ApiError from api.ts. If err.isConflict (409), show err.message
+  VERBATIM in a destructive Alert — the backend writes those sentences for
+  humans and paraphrasing removes the actionable part. Otherwise a generic
+  message with a Retry button.
+- Empty states everywhere, each with a specific sentence saying what is missing.
+- Responsive down to 375px.
+- Keyboard accessible: visible focus rings, Escape closes overlays.
+- Formatting: scores to one decimal place with "%", token counts with thousands
+  separators, dates as "2 Sep, 14:22", relative times as "3 days ago".
 
-Trend arrows: green up / red down for score, **inverted** for auto-fails and
-flags (fewer is better). When `change_pct.X` is `null` render an em-dash "—",
-never "0%" — null means there is no comparable prior period.
-
-### Row 2: score trend chart (full width)
-Data: `api.analytics.trend({...filters, granularity})` -> `TrendPoint[]`
-
-Composed Recharts chart:
-- Bars: `calls` per bucket, on a right-hand Y axis, muted zinc, low opacity
-- Line: `avg_score`, on a left-hand Y axis (0-100), 2px, emerald
-- Optional second line: `avg_sentiment` scaled to the same axis, dashed, toggled
-  by a legend checkbox
-- A day/week/month toggle in the card header, defaulting to week
-- Rich tooltip showing every metric for that bucket, including `auto_fails`
-- Empty state: "No calls in this period"
-
-### Row 3: two cards side by side
-
-**Left — Section performance** (`api.analytics.sections()` -> `SectionPerformance[]`)
-Horizontal bar chart, already sorted weakest-first by the API — keep that order,
-it is the point of the chart. Each row: section name, a bar coloured by score
-band, the percentage, and the section weight as a muted chip (e.g. "25% weight").
-Clicking a bar navigates to `/calls` filtered to that section's weakest calls.
-
-**Right — Score distribution** (`api.analytics.distribution()` -> `ScoreDistribution`)
-Histogram over `bands`. Render ALL TEN bands including empty ones — the API
-returns them deliberately so the x-axis is stable. Colour each bar by its band.
-Below it, a compact grade tally: A/B/C/D/F with counts.
-
-### Row 4: two cards side by side
-
-**Left — Agent leaderboard** (`api.analytics.agents()` -> `AgentScorecard[]`)
-Sortable table: Agent (name + code), Team, Calls, Avg score (coloured), a
-consistency indicator from `score_stddev`, Auto-fails, Sentiment delta.
-
-For consistency show a small horizontal range bar from `min_score` to
-`max_score` with a marker at `avg_score`, plus the σ value. This matters: a
-steady 78 and an erratic 60-95 average the same but are completely different
-coaching problems. Row click navigates to `/calls?support_agent_id=...`.
-
-**Right — Coaching priorities** (`api.analytics.criteria({ limit: 8 })`)
-The API returns worst-first. For each: criterion name, section as a muted
-breadcrumb, `avg_score` as a small bar, `fail_rate_pct` as bold red text, and a
-red "CRITICAL" badge when `is_critical`. Show `not_applicable` as a muted "N/A
-on N calls" note where non-zero.
-
-### Row 5: two cards side by side
-
-**Left — Open risk flags** (`api.analytics.flags({ limit: 8 })` -> `FlagSummary`)
-Severity chips at the top showing `by_severity` counts. Then a list of
-`recent_open`: severity badge, title, call code, agent name, relative time.
-Row click opens that call. Empty state: "No open flags — nice."
-
-**Right — Topics** (`api.analytics.topics()` -> `TopicBreakdown[]`)
-Table or treemap: topic, call count, avg score (coloured), avg sentiment. Topic
-click navigates to `/calls?topic=...`.
-
----
-
-## PAGE 2 — CALLS LIST (route: /calls)
-
-Data: `api.calls.list(filters)` -> `Paginated<CallOverview>`
-
-A dense, fast table. This is the workhorse screen.
-
-**Filter bar** (in addition to the global one, state in the URL):
-- Search box — placeholder "Search call code, agent, or transcript text…",
-  debounced 300ms. Make clear in a tooltip that it searches transcript CONTENT,
-  not just metadata.
-- Grade multi-select (A-F)
-- Score range slider (0-100)
-- Status dropdown
-- Toggles: "Has flags", "Auto-failed only"
-- Active filters shown as removable chips above the table
-
-**Columns:**
-
-| Column | Content |
-|---|---|
-| Call | `call_code` (monospace) + relative `started_at` below |
-| Agent | `agent_name` + `agent_code` muted |
-| Team | `team_name` as a chip |
-| Duration | `formatDuration(duration_seconds)` |
-| Score | Large coloured number + grade pill. If `auto_fail_triggered`, show "0% AUTO-FAIL" as a solid red badge instead |
-| Sentiment | Small badge from `sentiment_label`, plus `sentiment_delta` with a ↑/↓ arrow |
-| Flags | Count badge, red when `critical_flag_count > 0`, hidden when zero |
-| Summary | `headline`, truncated to one line |
-
-- Sortable headers mapping to `sort_by` / `sort_dir`
-- Server-side pagination using `limit` / `offset` with a page-size selector
-  (25/50/100) and a "Showing X-Y of Z" caption
-- Skeleton rows while loading, never a spinner that shifts layout
-- Empty state distinguishes "no calls yet" from "no calls match these filters",
-  the latter with a "Clear filters" button
-- Row click opens `/calls/:callId`
-
----
-
-## PAGE 3 — CALL DRILL-DOWN (route: /calls/:callId)   ★ the most important page
-
-Data: `api.calls.get(callId)` -> `CallDetail`. ONE request returns everything.
-
-### Header
-Back link, `call_code`, agent, team, date, duration. On the right, a large score
-display: percentage, grade pill, and — if `auto_fail_triggered` — a prominent
-red banner reading "AUTO-FAIL: {auto_fail_reason}". An unexplained zero must
-never appear.
-
-### Below the header: summary strip
-From `summary`: `headline` as a heading, `summary` as body text, then chips for
-`resolution_status`, `customer_intent`, and each `topics` entry. If
-`next_actions` is non-empty, a small checklist showing action / owner / due.
-
-### Main layout: two columns, 60/40
-
-**LEFT COLUMN — the transcript**
-
-Render turns from `turns`. Agent turns left-aligned with a neutral background;
-customer turns right-aligned with a tinted background. Show `speaker_label`, the
-text, and `start_ms` as `m:ss` when present.
-
-★ **CITATION HIGHLIGHTING — the core feature of this product.**
-
-When the user selects a criterion in the right column, every turn cited by that
-criterion must highlight, using the `citations` array on the `CriterionScore`:
-
-- Use the helper `highlightSegments(fullText, ranges)` exported from api.ts, or
-  match on `citation.turn_index`.
-- Highlight with a background tint: emerald for `polarity: "supporting"`, red
-  for `"detracting"`.
-- Auto-scroll the first highlighted turn into view, smoothly.
-- Show a small floating chip: "Showing evidence for: {criterion_name}" with an
-  X to clear.
-
-**NEVER search the transcript for `quoted_text` to find where to highlight.**
-Use `char_start` / `char_end`, which the backend guarantees are exact offsets
-into `transcript.full_text`. The quoted text may be a paraphrase and will not
-always match.
-
-Above the transcript, a small stats strip from `statistics`: agent talk ratio as
-a percentage with a mini bar (amber above 75%, with the tooltip "Agent dominated
-the conversation"), questions asked, interruptions detected, turn counts.
-
-**RIGHT COLUMN — scores, in tabs**
-
-*Tab 1: Scores* — an accordion grouped by section, using `section_scores`,
-`subsection_scores` and `criterion_scores` (join them on `section_code` and
-`subsection_code`).
-
-- Section header: name, `normalized * 100` as a coloured percentage, the weight
-  chip, and a progress bar. Expanded by default.
-- Sub-section rows nested inside, same treatment, one level indented.
-- Criterion rows: name, `formatScore(score)` from api.ts, a confidence dot
-  (filled proportionally to `confidence`), and a citation count badge.
-  - Clicking a criterion row highlights its citations in the transcript.
-  - Expanding shows `reasoning`, and each citation as a quote block with its
-    polarity colour and a "jump to turn" link.
-  - `is_applicable === false` renders a muted "N/A" chip with `na_reason` as a
-    tooltip. **Never render N/A as 0** — the backend excludes it from the total,
-    and showing 0 misrepresents the agent.
-  - `is_critical_snapshot` gets a red "CRITICAL" badge.
-
-*Tab 2: Sentiment* — a line chart of `sentiment_timeline` (x = `turn_index`,
-y = `score` from -1 to +1), with a zero reference line and the area under the
-curve tinted red below zero and green above. Clicking a point scrolls the
-transcript to that turn. Below it, three stats: opening, closing, and the delta
-with a trajectory badge.
-
-*Tab 3: Flags* — cards from `risk_flags`: severity badge, title, description,
-confidence, and the quoted text with a jump link. If `is_acknowledged`, show it
-muted with a check.
-
-*Tab 4: Pipeline* — the demo-winning tab. A vertical timeline of `agent_runs`
-ordered by `step_order`, each showing agent name, status icon, model, latency in
-ms, token counts, and `attempt_count` when greater than 1 (annotated "retried —
-the model was rate-limited"). Below it, totals: total tokens and a cost figure.
-This proves five distinct agents ran, rather than one prompt with headings.
-
-*Tab 5: History* — `evaluation_history` as a table: date, score, grade,
-`trigger_reason`, `model_used`, and an "is current" marker. This is how a
-manager sees whether a score changed because the agent improved or because the
-rubric changed.
-
----
-
-## BEHAVIOUR REQUIREMENTS
-
-- TanStack Query for every call, with `staleTime: 30_000` and query keys that
-  include the filters
-- Skeleton loaders shaped like the real content; never a full-page spinner
-- Error states: catch `ApiError`. For `err.isConflict` (409) show
-  `err.message` verbatim in a destructive alert — the backend writes those for
-  humans and paraphrasing loses the actionable part. For everything else show a
-  generic message with a Retry button.
-- Empty states everywhere, with a specific sentence explaining what is missing
-- Fully responsive: the drill-down stacks to one column below 1024px
-- Keyboard accessible: focus rings, escape closes overlays, tables navigable
-- All numbers formatted consistently: scores to one decimal place with a
-  trailing `%`, tokens with thousands separators
-
-## REALISTIC MOCK DATA (use these values so the UI looks right)
-
-- 84 calls, 9 agents, 3 teams: "Billing & Payments", "Technical Support",
-  "Retention & Loyalty"
-- Agent names: Priya Nair, Rahul Menon, Sneha Kulkarni, Arjun Deshmukh,
-  Fatima Sheikh, Vikram Iyer, Ananya Bose, Karan Malhotra, Meera Raghavan
-- Call codes look like `NW-20260830-0077`
-- Overall average score 54.3%, ranging from 0 (auto-fails) to about 79
-- Grade counts roughly: C 13, D 37, F 32
-- 12 auto-failed calls, all with the reason "Critical criterion failed:
-  Verifies customer identity"
-- Sections and weights: OPENING 15%, COMMUNICATION 25%, RESOLUTION 30%,
-  COMPLIANCE 20%, CLOSING 10%
-- Section averages: COMMUNICATION 43.0%, RESOLUTION 49.1%, OPENING 70.2%,
-  CLOSING 72.5%, COMPLIANCE 87.5%
-- 31 criteria. Weakest: PLAIN_LANGUAGE 1.2%, JARGON_AVOIDANCE 1.2%,
-  SOLUTION_ACCURACY 14.3%, ROOT_CAUSE_ID 18.5%
-- Two critical criteria: RECORDING_DISCLOSURE, IDENTITY_VERIFICATION
-- Topics: billing (31 calls), retention (31), technical (21)
-- 39 risk flags: 3 critical, 27 high, 9 medium
-- Agent runs per call: preprocessing, scoring, sentiment, risk, summary
-- Transcripts are telecoms support calls about duplicate charges, internet
-  outages, slow speeds, router setup, and cancellations. Turns look like:
-  "Agent: Thank you for calling Northwind Broadband, my name is Priya, and this
-  call is recorded for quality purposes." / "Customer: I have been charged twice
-  for my FIBER-300 plan this month and I am really frustrated."
+## ═══ MOCK DATA — use these real values ═══
+84 calls, 9 agents, 3 teams: "Billing & Payments", "Technical Support",
+"Retention & Loyalty".
+Agents: Priya Nair, Rahul Menon, Sneha Kulkarni, Arjun Deshmukh, Fatima Sheikh,
+Vikram Iyer, Ananya Bose, Karan Malhotra, Meera Raghavan.
+Call codes look like NW-20260830-0077.
+Overall average 54.2%. Grades: C 13, D 38, F 33. 12 auto-failed calls, all with
+reason "Critical criterion failed: Verifies customer identity".
+Sections and weights: OPENING 15%, COMMUNICATION 25%, RESOLUTION 30%,
+COMPLIANCE 20%, CLOSING 10%.
+Section averages: COMMUNICATION 42.6, RESOLUTION 48.7, OPENING 70.2,
+CLOSING 72.4, COMPLIANCE 87.8.
+Weakest criteria: PLAIN_LANGUAGE 1.2%, JARGON_AVOIDANCE 1.2%,
+SOLUTION_ACCURACY 14.3%, ROOT_CAUSE_ID 18.5%.
+Topics: retention 31 calls, billing 31, technical 21.
+41 risk flags: 3 critical, 29 high, 9 medium.
+Weekly trend: 5, 17, 17, 12, 13, 15, 5 calls with averages 48.0, 54.5, 55.5,
+57.5, 50.8, 52.8, 60.9.
 
 ## DELIVERABLE
+A working Vite + React + TypeScript project with the design system applied, the
+app shell, and the dashboard. Clean structure under src/components/ (ui/,
+charts/, layout/) and src/pages/. api.ts untouched apart from MOCK fixtures.
+```
 
-A complete, working Vite + React + TypeScript project with all three pages
-built, `src/lib/api.ts` used as the single data layer, and mock fixtures that
-match the real API shapes exactly. Clean component structure under
-`src/components/` and `src/pages/`.
+---
+## Part 3 — Prompt 2: calls list and call drill-down
 
-=== PROMPT END ===
+> Send after Prompt 1 is finished and looks right.
+
+```
+Add two pages. Do not modify the design system, the app shell, or the dashboard.
+Reuse the existing global filter bar, score colour rule, and card styles.
+
+## ═══ PAGE: CALLS (route /calls) ═══
+Data: api.calls.list(filters) -> Paginated<CallOverview>
+
+A dense, fast table. This is the workhorse screen — favour information density
+over whitespace here.
+
+### Filter row (above the table, state in the URL)
+- Search input with a Search icon. Placeholder: "Search call code, agent, or
+  transcript text…". Debounce 300ms. Tooltip: "Searches inside transcript
+  content, not just metadata." (It genuinely does — the backend runs full-text
+  search over transcripts.)
+- Grade multi-select A–F.
+- Score range: a dual-handle slider 0–100.
+- Status select.
+- Two toggle chips: "Has flags", "Auto-failed only".
+- Active filters appear as removable chips.
+
+### Columns
+| Column | Content |
+|---|---|
+| Call | call_code in JetBrains Mono 12px; started_at relative, muted, beneath |
+| Agent | agent_name 13px/500; agent_code muted beneath |
+| Team | small outline chip |
+| Duration | formatDuration(duration_seconds) |
+| Score | 16px/700 coloured by the score rule + grade pill. If auto_fail_triggered, replace entirely with a solid danger badge reading "AUTO-FAIL" and show 0% beside it |
+| Sentiment | label badge + sentiment_delta with ↑/↓, green/red |
+| Flags | count badge; solid danger when critical_flag_count > 0; render nothing when 0 |
+| Summary | headline, truncated to one line, muted |
+
+- Sortable headers mapping to sort_by / sort_dir (started_at, score, duration,
+  agent, sentiment).
+- Server-side pagination with limit/offset, page-size select 25/50/100, and a
+  "Showing 1–25 of 84" caption.
+- Row hover: subtle accent background, cursor pointer.
+- Loading: 10 skeleton rows that match the column widths, so the layout does not
+  jump.
+- Two distinct empty states: "No calls have been ingested yet" versus "No calls
+  match these filters" (the latter with a "Clear filters" button).
+- Row click → /calls/{call_id}.
+
+## ═══ PAGE: CALL DRILL-DOWN (route /calls/:callId) ═══
+Data: api.calls.get(callId) -> CallDetail. ONE request returns everything.
+
+THIS IS THE MOST IMPORTANT PAGE IN THE PRODUCT. It is where the platform proves
+its scores are trustworthy rather than magic.
+
+### Header band
+Back link "← Calls". Then call_code (mono, 18px), and a muted metadata row:
+agent name · team · date · duration · channel.
+
+Right side: a large score block — the percentage at 36px/700 coloured by the
+rule, the grade pill beneath.
+
+If auto_fail_triggered: instead render a full-width destructive Alert directly
+under the header, with an AlertTriangle icon, the heading "Auto-fail", and the
+auto_fail_reason text. The score still shows 0%, but never alone — an
+unexplained zero is exactly what this product exists to prevent.
+
+### Summary strip (full width card, under the header)
+From `summary`: headline as 15px/600, summary as body text, then a chip row for
+resolution_status, customer_intent, and each topic. If next_actions is
+non-empty, a small checklist below: action, owner, due.
+
+### Main layout: two columns, 58% / 42%, stacking to one column below 1024px
+
+═══ LEFT COLUMN — TRANSCRIPT ═══
+
+A stats strip at the top, from `statistics`, as five compact tiles:
+- Agent talk ratio as a percentage with a mini progress bar. Amber above 75%,
+  tooltip "Agent dominated the conversation".
+- Questions asked · Interruptions detected · Agent turns · Customer turns.
+
+Then the turn list, in a scrollable container with a sticky header:
+- Agent turns: left-aligned, bg-muted, rounded, max-width 88%.
+- Customer turns: right-aligned, bg-primary at 8% opacity with a primary left
+  border, max-width 88%.
+- Each turn: speaker_label in 11px/600 uppercase muted, then the text at 13px.
+  Show start_ms as "m:ss" in the corner when present.
+- Give every turn `id={`turn-${turn.turn_index}`}` so other panels can scroll
+  to it.
+
+★★★ CITATION HIGHLIGHTING — the single most important interaction ★★★
+
+When the user selects a criterion in the right column, every turn that criterion
+cited must highlight:
+
+- Read the `citations` array on that CriterionScore.
+- For each citation, find the turn where `turn.turn_index === citation.turn_index`.
+- Apply a background tint to that turn: success-soft for polarity "supporting",
+  danger-soft for "detracting", with a 2px left border in the matching solid
+  colour.
+- Smooth-scroll the first highlighted turn into view.
+- Show a floating chip pinned to the top of the transcript panel: "Showing
+  evidence for: {criterion_name}" with an X to clear.
+- For sub-turn precision, use the exported helper highlightSegments(fullText,
+  ranges) with char_start/char_end.
+
+**NEVER search the transcript text for citation.quoted_text.** The AI
+paraphrases when it quotes, so a text search silently fails and highlights
+nothing. Use turn_index and the stored char offsets, which the backend
+guarantees are exact.
+
+═══ RIGHT COLUMN — five tabs ═══
+
+**Tab 1 — Scores** (default)
+An accordion grouped by section. Join section_scores, subsection_scores and
+criterion_scores on section_code / subsection_code.
+
+- Section header row: section_name 14px/600, `normalized * 100` as a coloured
+  percentage, a muted weight chip, and a thin progress bar. Expanded by default.
+- Sub-section rows: indented 16px, same treatment at 13px, plus a muted
+  "{criteria_scored}/{criteria_total} scored" caption.
+- Criterion rows: indented 32px.
+  - Left: criterion_name at 13px. A solid danger "CRITICAL" badge when
+    is_critical_snapshot.
+  - Right: formatScore(score) from api.ts, a confidence dot (a small circle
+    filled proportionally to `confidence`, tooltip "Model confidence: 72%"), and
+    a citation-count badge with a Quote icon.
+  - **Clicking the row highlights that criterion's citations in the transcript
+    and marks the row as selected with a primary ring.**
+  - Expanding shows `reasoning` as body text, then each citation as a blockquote
+    with a left border in its polarity colour, the quoted text, and a "Jump to
+    turn {n}" link that scrolls the transcript.
+  - When is_applicable is false: render a muted "N/A" chip instead of a score,
+    with na_reason as the tooltip, and grey the row back. NEVER render 0 —
+    the backend excludes it from the weighted total, so 0 would be a false
+    statement about the agent.
+
+**Tab 2 — Sentiment**
+Recharts AreaChart of sentiment_timeline: x = turn_index, y = score fixed
+−1 to +1. Draw a ReferenceLine at y=0. Tint the area above zero success and
+below zero danger (use two Area series with gradient fills, or split at zero).
+Clicking a point scrolls the transcript to that turn.
+
+Beneath, three stat tiles: Opening, Closing, and Delta (large, signed, coloured)
+plus a trajectory badge ("recovered" gets a success badge — it means the agent
+turned an angry customer around, which is the strongest positive signal in the
+product).
+
+**Tab 3 — Flags**
+Cards from risk_flags: severity badge, title 13px/600, description, a confidence
+bar, and the quoted_text as a blockquote with "Jump to turn {n}". Acknowledged
+flags render muted with a Check icon. Empty state: "No risks flagged."
+
+**Tab 4 — Pipeline**
+A vertical timeline of agent_runs ordered by step_order. This tab exists to
+prove five distinct AI agents ran, rather than one prompt with headings — make
+it look convincing.
+
+Each step: a connector line and status dot (success/danger/muted), agent_name in
+13px/600, and a muted metadata row: model · {latency_ms}ms ·
+{input_tokens}→{output_tokens} tokens. When attempt_count > 1, an amber chip
+"retried ×{n}" with tooltip "The model was rate-limited or timed out; the
+provider retried automatically."
+
+Footer row: total tokens, total latency, and the model(s) used.
+
+**Tab 5 — History**
+Table from evaluation_history: date, score, grade, trigger_reason (formatted:
+"initial" → "Initial evaluation", "framework_change" → "Rubric changed",
+"manual_rerun" → "Manual re-run", "model_upgrade" → "Model upgraded"),
+model_used, and a primary "Current" badge where is_current.
+
+This answers a real question: did this agent's score change because they
+improved, or because we changed the rubric?
+
+## DELIVERABLE
+Both pages, reusing the existing design system. No new dependencies beyond what
+Prompt 1 installed.
+```
+
+---
+## Part 4 — Prompt 3: framework admin panel
+
+> Send after Prompt 2. This page is the project's headline feature — the rubric
+> is editable by a business user with no code change.
+
+```
+Add the Framework admin panel at /admin. Do not modify existing pages.
+
+## THE CONCEPT — read this before designing the UI
+
+The quality rubric is a three-level tree: Sections → Sub-sections → Criteria,
+each with a percentage weight. Weights must total 100 at EVERY level.
+
+Rubrics are VERSIONED and copy-on-write:
+- Exactly one version is `published` at a time. A published version is
+  IMMUTABLE — the backend refuses to edit it and returns HTTP 409.
+- Editing happens on a `draft`. Calling api.framework.draft() returns the
+  existing draft, or clones the published version into a new one.
+- Publishing validates the weights, archives the previous version, and promotes
+  the draft — atomically.
+
+So the UI must never attempt to PATCH a published version. Always call
+api.framework.draft() first, and make it visible which version is being edited.
+
+## ═══ LAYOUT ═══
+
+### Version bar (sticky, top of page)
+- Left: version_no and name, plus a status badge — published = success solid,
+  draft = warning outline, archived = muted.
+- Middle: when editing a draft, live validation from
+  api.framework.validate(versionId), polled after every edit (debounced 500ms):
+  - Valid → a success chip "Weights balanced" with a Check icon.
+  - Invalid → a warning chip "{n} issue(s)" that opens a popover listing each
+    issue's `issue` sentence, grouped by `level`.
+- Right: buttons — "Auto-balance" (api.framework.normalize), "Publish"
+  (disabled with a tooltip while invalid), and a version-history dropdown from
+  api.framework.versions().
+
+When viewing a published version, replace the edit controls with a single
+prominent "Edit framework" button that calls api.framework.draft() and shows a
+toast: "Editing draft v{n} — the published version is unchanged."
+
+### The tree editor (main area)
+A nested, collapsible tree. Each level is visually distinct through indentation
+and left border colour, not through boxes inside boxes.
+
+**Section row** — 48px tall, left border 3px chart-1:
+- Drag handle (GripVertical), expand chevron.
+- code in mono 11px muted; name in 14px/600, editable inline on click.
+- Weight: a compact number input with a "%" suffix, 72px wide.
+- An enable/disable Switch. Disabled rows render at 50% opacity with a muted
+  "Disabled" chip.
+- A muted count: "{n} sub-sections · {m} criteria".
+- Row actions on hover: add sub-section, duplicate, delete.
+
+**Sub-section row** — indented 24px, left border 2px chart-2, same controls.
+
+**Criterion row** — indented 48px, left border 2px muted. This is the leaf and
+carries the most:
+- name, and a solid danger "CRITICAL" badge when is_critical.
+- A scoring_type chip: "0–5", "0–10", "Met / Not met", "Numeric".
+- Weight input.
+- Enable Switch.
+- Clicking opens the criterion editor in a right-hand Sheet (see below).
+
+**Weight validity, shown inline.** Beside each parent, show the sum of its
+enabled children's weights. Render it success when it equals 100, danger
+otherwise, e.g. "100%" or "112% ⚠". This is the single most useful affordance on
+the page — the user should never have to hunt for which level is unbalanced.
+
+Drag-and-drop reordering within a level, persisted via
+api.framework.reorder(level, items).
+
+### Criterion editor (right Sheet, 520px)
+Fields, in this order:
+1. **Name** — text input.
+2. **Code** — mono input, uppercase, disabled when editing an existing
+   criterion (codes are how scores are matched across versions).
+3. **Description** — short textarea. Helper: "What this measures, for humans."
+4. **★ Scoring guidance** — a LARGE textarea, minimum 10 rows, monospace,
+   character count shown. This is the most important field on the entire page.
+   Label it "Scoring guidance (sent to the AI)". Helper text: **"This text is
+   sent to the AI model verbatim. Editing it changes how every future call is
+   scored — no code deployment needed."** Give it a subtle primary-tinted
+   background so it reads as special, because it is: this field is the
+   product's core claim.
+5. **Scoring type** — select: Met/Not met (binary), 0–5, 0–10, Numeric.
+   Show max_score and min_score inputs only when Numeric is chosen.
+6. **Weight** — number input with a live "of 100% in this sub-section" caption.
+7. **Critical (auto-fail)** — a Switch inside a danger-tinted callout box:
+   "Failing this criterion forces the entire call score to 0%. Use only for
+   regulatory or policy requirements."
+8. **Allow not-applicable** — a Switch. Helper: "Lets the AI mark this criterion
+   N/A when the situation never arose, instead of scoring it zero."
+9. **Examples** — an optional repeatable list of {score, example, why} rows,
+   used as few-shot anchors for the AI.
+
+Footer: Cancel / Save. Save calls api.framework.updateCriterion.
+
+### Publish flow
+Clicking Publish opens a confirmation Dialog:
+- Heading "Publish version {n}?"
+- A validation summary (must be all-clear to proceed).
+- A body explaining: "This version becomes the active rubric. The current
+  published version will be archived. Historical scores keep referencing the
+  version they were computed under and will not change."
+- Confirm calls api.framework.publish(versionId). On 409, show err.message
+  verbatim in a destructive alert — it names the exact unbalanced level.
+
+### ★ After publishing: the "apply to history" step
+On success, show a follow-up Dialog — this is the project's best demo moment:
+
+"Apply this rubric to existing calls?"
+Body: "Re-weighting is instant and free. Only genuinely new criteria need the
+AI to re-read transcripts."
+Buttons: "Not now" / "Apply to history" → api.framework.apply(versionId).
+
+Render the ReprojectResult prominently:
+- A large success line: "{recomputed_instantly} evaluations recomputed instantly
+  — 0 AI calls, no cost."
+- If queued_for_rescoring > 0, a second warning line: "{n} queued for re-scoring
+  because this version added new criteria."
+
+This distinction is the core architectural claim of the project. Make it look
+like the achievement it is.
+
+### Version history dropdown
+Lists all versions from api.framework.versions(): version_no, name, status
+badge, criterion_count, and evaluation_count. Selecting one opens it read-only.
+Warn on any version where evaluation_count > 0 that scores reference it.
+
+## DELIVERABLE
+The admin page, reusing the existing design system.
 ```
 
 ---
 
-## After Lovable generates it
+## Part 5 — Prompt 4: manager assistant (chat)
 
-Send me the project (zip, or the repo link). Wiring it to the live backend is:
+> Send last. The backend for this lands in Phase 7 — build the UI against the
+> mock so it is ready.
 
-1. `MOCK = false` in `api.ts`
-2. `VITE_API_URL=http://localhost:8000` in `.env`
-3. Replace any component that drifted from the contract
+```
+Add the Assistant at /chat. Do not modify existing pages.
 
-Because everything routes through `api.ts`, that is genuinely the whole
-integration — which is exactly why the prompt is written to forbid stray
-`fetch` calls and Supabase access.
+A manager-facing chat that answers questions over call transcripts and scores.
 
-## Verification checklist
+## LAYOUT
+Two columns: a 260px session sidebar, and the conversation.
 
-Before you send it back, confirm:
+**Sidebar**: "New conversation" button, then session list with title and
+relative time. Active session highlighted.
 
-- [ ] No `supabase` import anywhere
+**Conversation**: messages centred at max-width 760px.
+- User messages: right-aligned, primary-tinted bubble.
+- Assistant messages: left-aligned, no bubble — plain text on the page
+  background, rendered as markdown, so long answers read like a document rather
+  than a chat balloon.
+- Streaming: a blinking caret while generating.
+
+**★ Grounding — the anti-hallucination affordance**
+Every assistant answer carries citations. Beneath each answer render:
+- A muted caption: "Based on {n} calls".
+- Citation cards in a horizontal scroll: call_code (mono), agent name, and the
+  matched excerpt truncated to two lines. Clicking opens that call in a new tab.
+- When the answer used a SQL aggregation, a collapsible "How I calculated this"
+  section showing the generated SQL in a syntax-highlighted mono block.
+
+This matters because it is the difference between a chatbot and an analytics
+tool: the manager can verify every number.
+
+**Composer**: auto-growing textarea, Enter to send, Shift+Enter for newline,
+send button, and a stop button while streaming.
+
+**Empty state**: heading "Ask about your calls", then four clickable example
+prompts:
+- "Which agents scored lowest on empathy this week?"
+- "Show me calls where the customer mentioned billing issues"
+- "What are the most common reasons for auto-failure?"
+- "Summarise the biggest coaching opportunity for the Technical Support team"
+
+Mock the responses for now, with realistic citations drawn from the seeded data.
+
+## DELIVERABLE
+The chat page, reusing the existing design system.
+```
+
+---
+
+## Part 6 — Integration
+
+### Verification checklist — run before sending it back
+
+- [ ] No `supabase` import anywhere in the project
 - [ ] No `fetch(` outside `src/lib/api.ts`
-- [ ] `api.ts` types are unmodified
-- [ ] Citation highlighting uses `char_start` / `char_end`, not text search
+- [ ] The types in `api.ts` are unmodified
+- [ ] Citation highlighting uses `turn_index` / `char_start` / `char_end`, never
+      a text search for `quoted_text`
 - [ ] N/A criteria render as "N/A", never as 0
-- [ ] Auto-failed calls show the reason, never a bare 0%
-- [ ] The distribution histogram shows all ten bands, including empty ones
+- [ ] Auto-failed calls always show the reason alongside the 0%
+- [ ] The distribution histogram renders all ten bands, empty ones included
+- [ ] `change_pct: null` renders as "—", not "0%"
+- [ ] Both light and dark themes look correct
+- [ ] It builds: `npm run build` succeeds with no TypeScript errors
+
+Run this in the project root to check the first two mechanically:
+
+```bash
+grep -rn "supabase" src/ || echo "clean: no supabase"
+grep -rn "fetch(" src/ --include=*.tsx --include=*.ts | grep -v "lib/api.ts" || echo "clean: no stray fetch"
+```
+
+### Handing it back
+
+Send me the exported zip or the GitHub repo link. Wiring it to the live backend
+is then:
+
+1. `export const MOCK = false;` in `src/lib/api.ts`
+2. `VITE_API_URL=http://localhost:8000` in `.env`
+3. Fix any component that drifted from the contract
+
+That is genuinely the whole integration — which is the entire reason these
+prompts forbid stray `fetch` calls and Supabase access.
+
+### If Lovable ignores the Supabase rule anyway
+
+It sometimes does, because Supabase is its default. If you see it create tables
+or a Supabase client, reply:
+
+> Stop. Remove all Supabase code, the client, and any tables you created. This
+> app has an existing FastAPI backend. ALL data must come from `src/lib/api.ts`.
+> Do not create a database.
+
+Then re-send the affected prompt.
+
+---
+
+## Sources for the stack claims in Part 0
+
+- [Lovable Tech Stack & Security Architecture Explained (2026)](https://vibe-eval.com/guides/lovable-tech-stack/)
+- [Prompting best practices — Lovable Academy](https://academy.lovable.app/academy/prompting)
+- [The Lovable Prompting Bible](https://lovable.dev/blog/2025-01-16-lovable-prompting-handbook)
+- [Frontend Development Isn't Just UI — Lovable](https://lovable.dev/blog/frontend-development-with-lovable)
