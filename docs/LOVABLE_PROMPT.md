@@ -42,6 +42,18 @@ Do not paste all four prompts at once. Lovable produces noticeably better work
 on focused instructions, and a five-page single-shot generation is painful to
 correct.
 
+### If the build agent asks for the spec again and then stops
+
+This happens when a prompt invites it to confirm understanding first: Lovable's
+build agent treats that as a question, answers it, and ends the turn without
+writing code. Every prompt here therefore opens with an explicit "build this
+now, do not ask questions" instruction.
+
+If it still stalls, the cause is almost always that the build agent did not
+inherit the chat history. Re-send the prompt as ONE self-contained message with
+the api.ts contents included inline, rather than referring back to an earlier
+message.
+
 ---
 
 ## Part 1 — Knowledge file
@@ -113,8 +125,10 @@ decorative illustrations, no gradient-filled cards, no emoji in the UI.
 ```
 Build the foundation and the dashboard for CALL-ANALYZER.
 
-Before writing code, read the Knowledge file and confirm in one short paragraph
-what you understood, especially the constraint about not using Supabase.
+BUILD THIS NOW. Do not ask clarifying questions, do not ask me to re-supply the
+specification, and do not pause for confirmation — everything you need is in
+this message. If a detail is genuinely unspecified, choose a sensible default,
+note it in one line at the end, and keep building.
 
 ## STACK
 React 18 + TypeScript + Vite, Tailwind CSS, shadcn/ui, React Router,
